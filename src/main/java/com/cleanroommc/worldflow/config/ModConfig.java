@@ -29,7 +29,7 @@ public class ModConfig {
 
         @Config.Comment("Master toggle for parallel chunk generation pipeline.")
         @Config.Name("Enable Parallel Generation")
-        public boolean enableParallelGeneration = true;
+        public boolean enableParallelGeneration = false;
 
         @Config.Comment("Number of parallel worker threads for chunk generation (0 = auto: CPU cores - 1).")
         @Config.RangeInt(min = 0, max = 64)

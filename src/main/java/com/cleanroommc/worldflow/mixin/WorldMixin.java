@@ -5,6 +5,8 @@ import com.cleanroommc.worldflow.cascade.staging.GenerationContext;
 import com.cleanroommc.worldflow.config.ModConfig;
 import com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView;
 import net.minecraft.block.state.IBlockState;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.item.EntityFallingBlock;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
@@ -27,7 +29,10 @@ public abstract class WorldMixin {
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$onGetBlockState(BlockPos pos, CallbackInfoReturnable<IBlockState> cir) {
-        if (!this.isRemote && ModConfig.CONCURRENCY.enableThreadLocalWorldView && ThreadLocalWorldView.isGenerating()) {
+        if (!ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
+        if (!this.isRemote && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
             IBlockState state = ThreadLocalWorldView.getBlockState((World) (Object) this, pos);
             if (state != null) {
                 cir.setReturnValue(state);
@@ -46,7 +51,7 @@ public abstract class WorldMixin {
         World world = (World) (Object) this;
 
         // 1. Thread-local worker view isolation
-        if (ModConfig.CONCURRENCY.enableThreadLocalWorldView && ThreadLocalWorldView.isGenerating()) {
+        if (ThreadLocalWorldView.isGenerating() && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
             Boolean res = ThreadLocalWorldView.setBlockState(world, pos, newState, flags);
             if (res != null) {
                 cir.setReturnValue(res);
@@ -55,7 +60,7 @@ public abstract class WorldMixin {
         }
 
         // 2. Cascade fix for synchronous Forge population
-        if (ModConfig.GENERAL.enableCascadeFix && ModConfig.GENERAL.stageForgeDecorators && GenerationContext.isPopulating()) {
+        if (ModConfig.GENERAL != null && ModConfig.GENERAL.enableCascadeFix && ModConfig.GENERAL.stageForgeDecorators && GenerationContext.isPopulating()) {
             int chunkX = pos.getX() >> 4;
             int chunkZ = pos.getZ() >> 4;
 
@@ -70,7 +75,10 @@ public abstract class WorldMixin {
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$onGetChunk(int chunkX, int chunkZ, CallbackInfoReturnable<Chunk> cir) {
-        if (!this.isRemote && ModConfig.CONCURRENCY.enableThreadLocalWorldView && ThreadLocalWorldView.isGenerating()) {
+        if (!ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
+        if (!this.isRemote && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
             Chunk chunk = ThreadLocalWorldView.getChunk((World) (Object) this, chunkX, chunkZ);
             if (chunk != null) {
                 cir.setReturnValue(chunk);
@@ -82,7 +90,10 @@ public abstract class WorldMixin {
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$onGetBiome(BlockPos pos, CallbackInfoReturnable<Biome> cir) {
-        if (!this.isRemote && ModConfig.CONCURRENCY.enableThreadLocalWorldView && ThreadLocalWorldView.isGenerating()) {
+        if (!ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
+        if (!this.isRemote && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
             Biome biome = ThreadLocalWorldView.getBiome((World) (Object) this, pos);
             if (biome != null) {
                 cir.setReturnValue(biome);
@@ -94,7 +105,10 @@ public abstract class WorldMixin {
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$onGetHeight(BlockPos pos, CallbackInfoReturnable<BlockPos> cir) {
-        if (!this.isRemote && ModConfig.CONCURRENCY.enableThreadLocalWorldView && ThreadLocalWorldView.isGenerating()) {
+        if (!ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
+        if (!this.isRemote && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
             Integer height = ThreadLocalWorldView.getHeight((World) (Object) this, pos);
             if (height != null) {
                 cir.setReturnValue(new BlockPos(pos.getX(), height, pos.getZ()));
@@ -106,7 +120,10 @@ public abstract class WorldMixin {
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$onIsBlockLoaded(BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
-        if (!this.isRemote && ModConfig.CONCURRENCY.enableThreadLocalWorldView && ThreadLocalWorldView.isGenerating()) {
+        if (!ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
+        if (!this.isRemote && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
             Boolean loaded = ThreadLocalWorldView.isBlockLoaded((World) (Object) this, pos);
             if (loaded != null) {
                 cir.setReturnValue(loaded);
@@ -118,7 +135,10 @@ public abstract class WorldMixin {
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$onGetTileEntity(BlockPos pos, CallbackInfoReturnable<TileEntity> cir) {
-        if (!this.isRemote && ModConfig.CONCURRENCY.enableThreadLocalWorldView && ThreadLocalWorldView.isGenerating()) {
+        if (!ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
+        if (!this.isRemote && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
             TileEntity te = ThreadLocalWorldView.getTileEntity((World) (Object) this, pos);
             if (te != null) {
                 cir.setReturnValue(te);
@@ -130,11 +150,32 @@ public abstract class WorldMixin {
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$redirectBiomeProvider(CallbackInfoReturnable<net.minecraft.world.biome.BiomeProvider> cir) {
-        if (!this.isRemote && ModConfig.CONCURRENCY.enableThreadLocalWorldView && ThreadLocalWorldView.isGenerating()) {
+        if (!ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
+        if (!this.isRemote && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
             net.minecraft.world.biome.BiomeProvider workerProvider = com.cleanroommc.worldflow.pipeline.isolation.WorkerGeneratorContext.get().getBiomeProvider((World) (Object) this);
             if (workerProvider != null) {
                 cir.setReturnValue(workerProvider);
             }
+        }
+    }
+
+    @Inject(method = "spawnEntity",
+            at = @At("HEAD"),
+            cancellable = true)
+    private void worldflow$onSpawnEntity(Entity entityIn, CallbackInfoReturnable<Boolean> cir) {
+        if (!ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
+        if (!this.isRemote && entityIn instanceof EntityFallingBlock) {
+            EntityFallingBlock falling = (EntityFallingBlock) entityIn;
+            IBlockState state = falling.getBlock();
+            if (state != null) {
+                BlockPos pos = falling.getOrigin() != null ? falling.getOrigin() : new BlockPos(falling.posX, falling.posY, falling.posZ);
+                ThreadLocalWorldView.setBlockState((World) (Object) this, pos, state, 3);
+            }
+            cir.setReturnValue(false);
         }
     }
 }

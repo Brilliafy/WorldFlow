@@ -11,7 +11,6 @@ import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.chunk.Chunk;
-import net.minecraft.world.chunk.EmptyChunk;
 
 import javax.annotation.Nullable;
 import java.util.Map;
@@ -36,7 +35,7 @@ public class ThreadLocalWorldView {
         public final ChunkPos centerPos;
         public final ProtoChunk centerProto;
         public final Map<Long, ProtoChunk> neighbourhood = new ConcurrentHashMap<>();
-        public final EmptyChunk emptyChunk;
+        public final Chunk emptyChunk;
         public final String generatorName;
 
         public GenerationWorkerContext(WorldServer world, ChunkPos centerPos, ProtoChunk centerProto, String generatorName) {
@@ -44,7 +43,7 @@ public class ThreadLocalWorldView {
             this.centerPos = centerPos;
             this.centerProto = centerProto;
             this.generatorName = generatorName;
-            this.emptyChunk = new EmptyChunk(world, centerPos.x, centerPos.z);
+            this.emptyChunk = new Chunk(world, centerPos.x, centerPos.z);
             if (centerProto != null) {
                 this.neighbourhood.put(ChunkPos.asLong(centerPos.x, centerPos.z), centerProto);
             }
