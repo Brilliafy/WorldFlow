@@ -57,6 +57,19 @@ public abstract class PlayerChunkMapEntryMixin implements IPlayerChunkMapEntry {
             return;
         }
 
+        // 2. DISK-EXISTENCE GUARD: If saved on disk, load from disk — NEVER pipeline generate!
+        if (world.getChunkProvider().chunkLoader != null && world.getChunkProvider().chunkLoader.isChunkGeneratedAt(this.pos.x, this.pos.z)) {
+            Chunk diskChunk = world.getChunkProvider().loadChunk(this.pos.x, this.pos.z);
+            if (diskChunk != null) {
+                this.chunk = diskChunk;
+                cir.setReturnValue(true);
+                return;
+            }
+            // If queued for async load (ChunkFlow), keep entry pending without generating
+            cir.setReturnValue(false);
+            return;
+        }
+
         if (!canGenerate) {
             cir.setReturnValue(false);
             return;

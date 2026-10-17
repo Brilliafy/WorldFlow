@@ -70,68 +70,98 @@ public class ProtoChunk {
         return this.status.get().isAtLeast(required);
     }
 
+    private final Object chunkLock = new Object();
+
     public Chunk getChunk() {
-        return this.underlyingChunk;
+        synchronized (this.chunkLock) {
+            return this.underlyingChunk;
+        }
     }
 
-    public synchronized void setUnderlyingChunk(Chunk chunk) {
+    public void setUnderlyingChunk(Chunk chunk) {
         if (chunk != null) {
-            this.underlyingChunk = chunk;
+            synchronized (this.chunkLock) {
+                this.underlyingChunk = chunk;
+            }
         }
     }
 
     public IBlockState getBlockState(BlockPos pos) {
-        Chunk chunk = this.underlyingChunk;
-        if (chunk == null || pos.getY() < 0 || pos.getY() >= 256) {
+        if (pos.getY() < 0 || pos.getY() >= 256) {
             return Blocks.AIR.getDefaultState();
         }
-        return chunk.getBlockState(pos);
+        synchronized (this.chunkLock) {
+            Chunk chunk = this.underlyingChunk;
+            if (chunk == null) {
+                return Blocks.AIR.getDefaultState();
+            }
+            return chunk.getBlockState(pos);
+        }
     }
 
     public boolean setBlockState(BlockPos pos, IBlockState state) {
-        Chunk chunk = this.underlyingChunk;
-        if (chunk == null || pos.getY() < 0 || pos.getY() >= 256 || state == null) {
+        if (pos.getY() < 0 || pos.getY() >= 256 || state == null) {
             return false;
         }
-        return chunk.setBlockState(pos, state) != null;
+        synchronized (this.chunkLock) {
+            Chunk chunk = this.underlyingChunk;
+            if (chunk == null) {
+                return false;
+            }
+            return chunk.setBlockState(pos, state) != null;
+        }
     }
 
     public Biome getBiome(BlockPos pos, BiomeProvider provider) {
-        Chunk chunk = this.underlyingChunk;
-        if (chunk != null) {
-            return chunk.getBiome(pos, provider);
+        synchronized (this.chunkLock) {
+            Chunk chunk = this.underlyingChunk;
+            if (chunk != null) {
+                return chunk.getBiome(pos, provider);
+            }
+            return provider.getBiome(pos);
         }
-        return provider.getBiome(pos);
     }
 
     public int getHeight(BlockPos pos) {
-        Chunk chunk = this.underlyingChunk;
-        if (chunk != null) {
-            return chunk.getHeight(pos);
+        synchronized (this.chunkLock) {
+            Chunk chunk = this.underlyingChunk;
+            if (chunk != null) {
+                return chunk.getHeight(pos);
+            }
+            return 64;
         }
-        return 64;
     }
 
     @Nullable
     public TileEntity getTileEntity(BlockPos pos) {
-        Chunk chunk = this.underlyingChunk;
-        if (chunk != null) {
-            return chunk.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+        synchronized (this.chunkLock) {
+            Chunk chunk = this.underlyingChunk;
+            if (chunk != null) {
+                return chunk.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+            }
+            return null;
         }
-        return null;
     }
 
     public void addTileEntity(BlockPos pos, TileEntity tileEntity) {
-        Chunk chunk = this.underlyingChunk;
-        if (chunk != null && tileEntity != null) {
-            chunk.addTileEntity(pos, tileEntity);
+        if (tileEntity != null) {
+            synchronized (this.chunkLock) {
+                Chunk chunk = this.underlyingChunk;
+                if (chunk != null) {
+                    chunk.addTileEntity(pos, tileEntity);
+                }
+            }
         }
     }
 
     public void addEntity(Entity entity) {
-        Chunk chunk = this.underlyingChunk;
-        if (chunk != null && entity != null) {
-            chunk.addEntity(entity);
+        if (entity != null) {
+            synchronized (this.chunkLock) {
+                Chunk chunk = this.underlyingChunk;
+                if (chunk != null) {
+                    chunk.addEntity(entity);
+                }
+            }
         }
     }
 

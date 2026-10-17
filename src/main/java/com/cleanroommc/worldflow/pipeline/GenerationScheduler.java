@@ -58,7 +58,15 @@ public class GenerationScheduler {
             return CompletableFuture.completedFuture(loaded);
         }
 
-        // 2. Already tracked in pipeline?
+        // 2. DISK-EXISTENCE GUARD: Check if chunk is saved on disk — NEVER overwrite existing world data!
+        if (world.getChunkProvider().chunkLoader != null && world.getChunkProvider().chunkLoader.isChunkGeneratedAt(x, z)) {
+            Chunk diskChunk = world.getChunkProvider().loadChunk(x, z);
+            if (diskChunk != null) {
+                return CompletableFuture.completedFuture(diskChunk);
+            }
+        }
+
+        // 3. Already tracked in pipeline?
         StatusHolder existing = this.inFlight.get(key);
         if (existing != null) {
             existing.bumpPriority(priority);
@@ -66,7 +74,18 @@ public class GenerationScheduler {
             return existing.getFuture();
         }
 
-        // 3. Register new StatusHolder
+        // 4. In-flight backpressure / memory guard: Cap maximum concurrent in-flight generations
+        int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 64;
+        if (this.inFlight.size() >= maxInFlight) {
+            long waitStart = System.currentTimeMillis();
+            while (this.inFlight.size() >= maxInFlight && (System.currentTimeMillis() - waitStart < 50)) {
+                try {
+                    Thread.sleep(5);
+                } catch (InterruptedException ignored) {}
+            }
+        }
+
+        // 5. Register new StatusHolder
         StatusHolder holder = new StatusHolder(world, x, z, targetStatus, priority);
         StatusHolder prev = this.inFlight.putIfAbsent(key, holder);
         if (prev != null) {
@@ -75,7 +94,7 @@ public class GenerationScheduler {
             return prev.getFuture();
         }
 
-        // 4. Begin staged pipeline execution
+        // 6. Begin staged pipeline execution
         advanceChunk(holder);
         return holder.getFuture();
     }
@@ -196,8 +215,10 @@ public class GenerationScheduler {
             IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
             Random workerRand = WorkerGeneratorContext.get().rand;
 
-            // 1. PopulateChunkEvent.Pre
-            MinecraftForge.EVENT_BUS.post(new PopulateChunkEvent.Pre(generator, world, workerRand, pos.x, pos.z, false));
+            // 1. PopulateChunkEvent.Pre (Synchronized on EVENT_BUS to protect mod listeners from off-thread race conditions)
+            synchronized (MinecraftForge.EVENT_BUS) {
+                MinecraftForge.EVENT_BUS.post(new PopulateChunkEvent.Pre(generator, world, workerRand, pos.x, pos.z, false));
+            }
 
             // 2. Standard population (ores, flora, structures)
             generator.populate(pos.x, pos.z);
@@ -206,7 +227,9 @@ public class GenerationScheduler {
             generateModWorldIsolated(pos.x, pos.z, world, generator, provider, workerRand);
 
             // 4. PopulateChunkEvent.Post
-            MinecraftForge.EVENT_BUS.post(new PopulateChunkEvent.Post(generator, world, workerRand, pos.x, pos.z, false));
+            synchronized (MinecraftForge.EVENT_BUS) {
+                MinecraftForge.EVENT_BUS.post(new PopulateChunkEvent.Post(generator, world, workerRand, pos.x, pos.z, false));
+            }
 
             proto.setTerrainPopulated(true);
             holder.setCurrentStatus(ChunkStatus.LIGHT);
@@ -221,6 +244,9 @@ public class GenerationScheduler {
     }
 
     private static volatile List<IWorldGenerator> cachedSortedGenerators;
+    private final AtomicLong lastMetricsLog = new AtomicLong(System.currentTimeMillis());
+    private final AtomicLong parallelCount = new AtomicLong(0);
+    private final AtomicLong serializedCount = new AtomicLong(0);
 
     private void generateModWorldIsolated(int chunkX, int chunkZ, WorldServer world, IChunkGenerator chunkGenerator, ChunkProviderServer chunkProvider, Random rand) {
         if (cachedSortedGenerators == null) {
@@ -253,12 +279,15 @@ public class GenerationScheduler {
             fmlRandom.setSeed(chunkSeed);
             GeneratorSafetyLevel safety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
             if (safety == GeneratorSafetyLevel.SERIALIZE) {
+                this.serializedCount.incrementAndGet();
                 synchronized (generator) {
                     generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
                 }
             } else if (safety == GeneratorSafetyLevel.PARALLEL_SAFE) {
+                this.parallelCount.incrementAndGet();
                 generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
             } else if (safety == GeneratorSafetyLevel.UNSAFE) {
+                this.serializedCount.incrementAndGet();
                 try {
                     GenerationWorkerPool.getInstance().submitSerializer(() -> {
                         generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
@@ -267,6 +296,21 @@ public class GenerationScheduler {
                     WorldFlow.LOGGER.warn("[WorldFlow] UNSAFE generator {} timed out or failed in chunk [{}, {}]", generator.getClass().getName(), chunkX, chunkZ, t);
                 }
             }
+        }
+        checkLogMetrics();
+    }
+
+    private void checkLogMetrics() {
+        long now = System.currentTimeMillis();
+        long last = this.lastMetricsLog.get();
+        if (now - last > 30000L && this.lastMetricsLog.compareAndSet(last, now)) {
+            WorldFlow.LOGGER.info("[WorldFlow Metrics] In-Flight: {} | Parallel Gens: {} | Serialized Gens: {} | Published: {} | Active Workers: {}",
+                    this.inFlight.size(),
+                    this.parallelCount.get(),
+                    this.serializedCount.get(),
+                    PublishManager.INSTANCE.totalChunksPublished.get(),
+                    GenerationWorkerPool.getInstance().getActiveWorkerCount()
+            );
         }
     }
 

@@ -64,44 +64,73 @@ public class PublishManager {
     }
 
     public void publishChunk(WorldServer world, StatusHolder holder) {
-        ProtoChunk proto = holder.getProtoChunk();
-        Chunk chunk = proto.getChunk();
+        if (holder == null || holder.getWorld() != world) {
+            return;
+        }
+
+        long key = holder.getChunkKey();
         int cx = holder.getPos().x;
         int cz = holder.getPos().z;
-        long key = holder.getChunkKey();
 
-        // 1. Insert into live loadedChunks map
+        // 1. Invalidation / Supersede Check: Check if already loaded in RAM
+        Chunk existing = world.getChunkProvider().getLoadedChunk(cx, cz);
+        if (existing != null) {
+            // Live chunk already present — drop stale proto to prevent ghost chunks / overwrite
+            holder.setCurrentStatus(ChunkStatus.FULL);
+            holder.getFuture().complete(existing);
+            GenerationScheduler.getInstance().removeInFlight(key);
+            return;
+        }
+
+        ProtoChunk proto = holder.getProtoChunk();
+        Chunk chunk = proto.getChunk();
+
+        // 2. Insert into live loadedChunks map
         world.getChunkProvider().loadedChunks.put(key, chunk);
         chunk.onLoad();
 
-        // 2. Flush any staged blocks that were waiting for this chunk
+        // 3. Flush any staged blocks that were waiting for this chunk
         CascadeBlockBuffer.INSTANCE.flushChunk(world, chunk);
 
-        // 3. Tick-thread lighting calculation
+        // 4. Tick-thread lighting calculation + neighbour border relight to prevent black seams
         try {
             chunk.checkLight();
+            for (int[] offset : new int[][]{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) {
+                Chunk neighbour = world.getChunkProvider().getLoadedChunk(cx + offset[0], cz + offset[1]);
+                if (neighbour != null) {
+                    neighbour.checkLight();
+                }
+            }
         } catch (Throwable t) {
             WorldFlow.LOGGER.debug("[WorldFlow] Light check exception on chunk [{}, {}]", cx, cz, t);
         }
 
-        // 4. Fire Forge ChunkEvent.Load on the server tick thread
+        // 5. Fire Forge ChunkEvent.Load on the server tick thread
         MinecraftForge.EVENT_BUS.post(new ChunkEvent.Load(chunk));
 
-        // 5. Update PlayerChunkMapEntry and send packet to waiting players
+        // 6. Update PlayerChunkMapEntry and send packet to waiting players
         PlayerChunkMapEntry entry = world.getPlayerChunkMap().getEntry(cx, cz);
         if (entry != null) {
             if (entry instanceof IPlayerChunkMapEntry) {
                 ((IPlayerChunkMapEntry) entry).worldflow$setChunk(chunk);
             }
-            entry.sendToPlayers();
+            if (entry.getChunk() != null) {
+                entry.sendToPlayers();
+            }
+        } else {
+            // Player teleported away / quit: queue chunk for unload so it does not leak as a ghost chunk
+            boolean hasForgeTicket = net.minecraftforge.common.ForgeChunkManager.getPersistentChunksFor(world).containsKey(holder.getPos());
+            if (!hasForgeTicket) {
+                world.getChunkProvider().queueUnload(chunk);
+            }
         }
 
-        // 6. Complete status and future
+        // 7. Complete status and future
         holder.setCurrentStatus(ChunkStatus.FULL);
         holder.getFuture().complete(chunk);
         this.totalChunksPublished.incrementAndGet();
 
-        // 7. Cleanup from in-flight tracker
+        // 8. Cleanup from in-flight tracker
         GenerationScheduler.getInstance().removeInFlight(key);
     }
 
