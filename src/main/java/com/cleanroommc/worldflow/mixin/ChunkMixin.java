@@ -13,11 +13,28 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import com.cleanroommc.worldflow.pipeline.IWorldFlowChunk;
 
-@Mixin(Chunk.class)
+@Mixin(value = Chunk.class, priority = 500)
 public abstract class ChunkMixin implements IWorldFlowChunk {
+
+    @Inject(method = "getLightSubtracted", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onGetLightSubtracted(net.minecraft.util.math.BlockPos pos, int amount, CallbackInfoReturnable<Integer> cir) {
+        if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            Chunk chunk = (Chunk) (Object) this;
+            int light = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunkSafeLight(chunk, pos);
+            cir.setReturnValue(Math.max(0, light - amount));
+        }
+    }
+
+    @Inject(method = "getLightFor", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onGetLightFor(net.minecraft.world.EnumSkyBlock type, net.minecraft.util.math.BlockPos pos, CallbackInfoReturnable<Integer> cir) {
+        if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            Chunk chunk = (Chunk) (Object) this;
+            cir.setReturnValue(com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunkSafeLightFor(chunk, type, pos));
+        }
+    }
 
     private IWorldFlowChunk.GenPath worldflow$genPath = IWorldFlowChunk.GenPath.UNKNOWN;
 

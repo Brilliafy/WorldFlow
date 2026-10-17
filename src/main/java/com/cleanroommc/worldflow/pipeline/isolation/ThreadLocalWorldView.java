@@ -278,4 +278,125 @@ public class ThreadLocalWorldView {
         }
         return world.getChunkProvider().getLoadedChunk(chunkX, chunkZ) != null;
     }
+
+    public static int getLight(World world, BlockPos pos, boolean checkNeighbors) {
+        GenerationWorkerContext ctx = CURRENT_CONTEXT.get();
+        if (ctx == null) {
+            return 15;
+        }
+        if (pos.getY() < 0) return 0;
+        if (pos.getY() >= 256) return 15;
+
+        int chunkX = pos.getX() >> 4;
+        int chunkZ = pos.getZ() >> 4;
+        long key = ChunkPos.asLong(chunkX, chunkZ);
+
+        ProtoChunk proto = ctx.neighbourhood.get(key);
+        if (proto != null) {
+            return getChunkSafeLight(proto.getChunk(), pos);
+        }
+
+        Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
+        if (loaded != null) {
+            return getChunkSafeLight(loaded, pos);
+        }
+
+        Integer height = getHeight(world, pos);
+        return (height != null && pos.getY() >= height) ? 15 : 0;
+    }
+
+    public static int getLightFor(World world, net.minecraft.world.EnumSkyBlock type, BlockPos pos) {
+        if (pos.getY() < 0) return 0;
+        if (pos.getY() >= 256) return type == net.minecraft.world.EnumSkyBlock.SKY ? 15 : 0;
+
+        GenerationWorkerContext ctx = CURRENT_CONTEXT.get();
+        if (ctx == null) {
+            return type == net.minecraft.world.EnumSkyBlock.SKY ? 15 : 0;
+        }
+
+        int chunkX = pos.getX() >> 4;
+        int chunkZ = pos.getZ() >> 4;
+        long key = ChunkPos.asLong(chunkX, chunkZ);
+
+        ProtoChunk proto = ctx.neighbourhood.get(key);
+        if (proto != null) {
+            return getChunkSafeLightFor(proto.getChunk(), type, pos);
+        }
+
+        Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
+        if (loaded != null) {
+            return getChunkSafeLightFor(loaded, type, pos);
+        }
+
+        Integer height = getHeight(world, pos);
+        if (type == net.minecraft.world.EnumSkyBlock.SKY) {
+            return (height != null && pos.getY() >= height) ? 15 : 0;
+        }
+        return 0;
+    }
+
+    public static int getCombinedLight(World world, BlockPos pos, int lightValue) {
+        int sky = getLightFor(world, net.minecraft.world.EnumSkyBlock.SKY, pos);
+        int block = getLightFor(world, net.minecraft.world.EnumSkyBlock.BLOCK, pos);
+        if (block < lightValue) {
+            block = lightValue;
+        }
+        return sky << 20 | block << 4;
+    }
+
+    public static int getChunkSafeLight(Chunk chunk, BlockPos pos) {
+        if (chunk == null) return pos.getY() >= 64 ? 15 : 0;
+        int y = pos.getY();
+        if (y < 0) return 0;
+        if (y >= 256) return 15;
+
+        net.minecraft.world.chunk.storage.ExtendedBlockStorage[] storage = chunk.getBlockStorageArray();
+        int sec = y >> 4;
+        int lx = pos.getX() & 15;
+        int ly = y & 15;
+        int lz = pos.getZ() & 15;
+
+        if (storage != null && sec >= 0 && sec < storage.length && storage[sec] != null) {
+            int blockLight = storage[sec].getBlockLight(lx, ly, lz);
+            int skyLight = storage[sec].getSkyLight(lx, ly, lz);
+            if (skyLight == 0 && chunk.getHeightValue(lx, lz) <= y) {
+                skyLight = 15;
+            }
+            return Math.max(blockLight, skyLight);
+        }
+
+        int topY = chunk.getHeightValue(lx, lz);
+        return y >= topY ? 15 : 0;
+    }
+
+    public static int getChunkSafeLightFor(Chunk chunk, net.minecraft.world.EnumSkyBlock type, BlockPos pos) {
+        if (chunk == null) return type == net.minecraft.world.EnumSkyBlock.SKY ? (pos.getY() >= 64 ? 15 : 0) : 0;
+        int y = pos.getY();
+        if (y < 0) return 0;
+        if (y >= 256) return type == net.minecraft.world.EnumSkyBlock.SKY ? 15 : 0;
+
+        net.minecraft.world.chunk.storage.ExtendedBlockStorage[] storage = chunk.getBlockStorageArray();
+        int sec = y >> 4;
+        int lx = pos.getX() & 15;
+        int ly = y & 15;
+        int lz = pos.getZ() & 15;
+
+        if (storage != null && sec >= 0 && sec < storage.length && storage[sec] != null) {
+            if (type == net.minecraft.world.EnumSkyBlock.SKY) {
+                int sky = storage[sec].getSkyLight(lx, ly, lz);
+                if (sky == 0 && chunk.getHeightValue(lx, lz) <= y) {
+                    sky = 15;
+                }
+                return sky;
+            } else {
+                return storage[sec].getBlockLight(lx, ly, lz);
+            }
+        }
+
+        if (type == net.minecraft.world.EnumSkyBlock.SKY) {
+            int topY = chunk.getHeightValue(lx, lz);
+            return y >= topY ? 15 : 0;
+        }
+        return 0;
+    }
 }

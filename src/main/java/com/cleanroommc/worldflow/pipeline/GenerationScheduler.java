@@ -242,7 +242,7 @@ public class GenerationScheduler {
 
         if (allReady) {
             if (isSerialized) {
-                GenerationWorkerPool.getInstance().executeSerializer(() -> executeFeatures(holder, neighbourhood));
+                world.addScheduledTask(() -> executeFeatures(holder, neighbourhood));
             } else {
                 GenerationWorkerPool.getInstance().executeWorker(holder, () -> executeFeatures(holder, neighbourhood));
             }
@@ -259,8 +259,12 @@ public class GenerationScheduler {
                                 }
                             }
                         }
-                        executeFeatures(holder, neighbourhood);
-                    }, isSerialized ? GenerationWorkerPool.getInstance()::executeSerializer : r -> GenerationWorkerPool.getInstance().executeWorker(holder, r));
+                        if (isSerialized) {
+                            world.addScheduledTask(() -> executeFeatures(holder, neighbourhood));
+                        } else {
+                            executeFeatures(holder, neighbourhood);
+                        }
+                    }, isSerialized ? world::addScheduledTask : r -> GenerationWorkerPool.getInstance().executeWorker(holder, r));
         }
     }
 
@@ -308,7 +312,7 @@ public class GenerationScheduler {
             proto.setTerrainPopulated(true);
             holder.setCurrentStatus(ChunkStatus.LIGHT);
         } catch (Throwable t) {
-            WorldFlow.LOGGER.warn("[WorldFlow] Off-thread error decorating chunk [{}, {}], falling back to main-thread finalize", pos.x, pos.z, t);
+            WorldFlow.LOGGER.warn("[WorldFlow] Off-thread error decorating chunk [{}, {}], falling back to main-thread finalize: {}", pos.x, pos.z, t.toString());
             fallbackToMainThreadSerial(holder);
             return;
         } finally {
@@ -336,14 +340,8 @@ public class GenerationScheduler {
                     return;
                 }
                 // Complete generation serially on the main server thread
-                Chunk chunk = holder.getProtoChunk().getChunk();
-                if (chunk == null || !holder.getCurrentStatus().isAtLeast(ChunkStatus.CARVERS)) {
-                    chunk = world.getChunkProvider().chunkGenerator.generateChunk(pos.x, pos.z);
-                    if (chunk == null) {
-                        chunk = new Chunk(world, pos.x, pos.z);
-                    }
-                    holder.getProtoChunk().setUnderlyingChunk(chunk);
-                }
+                Chunk chunk = world.getChunkProvider().provideChunk(pos.x, pos.z);
+                holder.getProtoChunk().setUnderlyingChunk(chunk);
                 holder.getProtoChunk().setTerrainPopulated(true);
                 PublishManager.INSTANCE.publishChunk(world, holder);
             } catch (Throwable fallbackErr) {

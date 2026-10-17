@@ -17,9 +17,10 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import net.minecraft.world.EnumSkyBlock;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-@Mixin(World.class)
+@Mixin(value = World.class, priority = 500)
 public abstract class WorldMixin {
 
     @Shadow
@@ -196,6 +197,48 @@ public abstract class WorldMixin {
     private void worldflow$onNotifyNeighbors(BlockPos pos, net.minecraft.block.Block blockType, boolean updateObservers, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
         if (ThreadLocalWorldView.isGenerating()) {
             ci.cancel();
+        }
+    }
+
+    @Inject(method = "getLight(Lnet/minecraft/util/math/BlockPos;)I", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onGetLight(BlockPos pos, CallbackInfoReturnable<Integer> cir) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            cir.setReturnValue(ThreadLocalWorldView.getLight((World) (Object) this, pos, false));
+        }
+    }
+
+    @Inject(method = "getLight(Lnet/minecraft/util/math/BlockPos;Z)I", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onGetLightWithNeighbors(BlockPos pos, boolean checkNeighbors, CallbackInfoReturnable<Integer> cir) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            cir.setReturnValue(ThreadLocalWorldView.getLight((World) (Object) this, pos, checkNeighbors));
+        }
+    }
+
+    @Inject(method = "getLightFor", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onGetLightFor(EnumSkyBlock type, BlockPos pos, CallbackInfoReturnable<Integer> cir) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            cir.setReturnValue(ThreadLocalWorldView.getLightFor((World) (Object) this, type, pos));
+        }
+    }
+
+    @Inject(method = "getLightFromNeighbors", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onGetLightFromNeighbors(BlockPos pos, CallbackInfoReturnable<Integer> cir) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            cir.setReturnValue(ThreadLocalWorldView.getLight((World) (Object) this, pos, true));
+        }
+    }
+
+    @Inject(method = "getLightFromNeighborsFor", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onGetLightFromNeighborsFor(EnumSkyBlock type, BlockPos pos, CallbackInfoReturnable<Integer> cir) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            cir.setReturnValue(ThreadLocalWorldView.getLightFor((World) (Object) this, type, pos));
+        }
+    }
+
+    @Inject(method = "getCombinedLight", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onGetCombinedLight(BlockPos pos, int lightValue, CallbackInfoReturnable<Integer> cir) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            cir.setReturnValue(ThreadLocalWorldView.getCombinedLight((World) (Object) this, pos, lightValue));
         }
     }
 }
