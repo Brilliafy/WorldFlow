@@ -2,6 +2,7 @@ package com.cleanroommc.worldflow.cascade.staging;
 
 import com.cleanroommc.worldflow.config.ModConfig;
 import com.cleanroommc.worldflow.pipeline.GenerationScheduler;
+import com.cleanroommc.worldflow.pipeline.isolation.WorkerGeneratorContext;
 import net.minecraft.world.WorldServer;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraftforge.event.terraingen.PopulateChunkEvent;
@@ -11,6 +12,15 @@ import net.minecraftforge.fml.common.eventhandler.EventPriority;
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent;
 
 public class ChunkEventHandler {
+
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onWorldLoad(WorldEvent.Load event) {
+        if (event.getWorld().isRemote || !(event.getWorld() instanceof WorldServer)) {
+            return;
+        }
+        WorldServer worldServer = (WorldServer) event.getWorld();
+        WorkerGeneratorContext.fireInitNoiseGensEvent(worldServer, null);
+    }
 
     @SubscribeEvent(priority = EventPriority.HIGHEST)
     public static void onPopulatePre(PopulateChunkEvent.Pre event) {

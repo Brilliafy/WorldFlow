@@ -78,6 +78,7 @@ public class PublishManager {
         if (existing != null) {
             // Live chunk already present — drop stale proto to prevent ghost chunks / overwrite
             holder.setCurrentStatus(ChunkStatus.FULL);
+            holder.getCarversFuture().complete(existing);
             holder.getFuture().complete(existing);
             GenerationScheduler.getInstance().removeInFlight(key);
             return;
@@ -138,6 +139,7 @@ public class PublishManager {
         }
         GenerationScheduler.getInstance().totalChunksPipeline.incrementAndGet();
         holder.setCurrentStatus(ChunkStatus.FULL);
+        holder.getCarversFuture().complete(chunk);
         holder.getFuture().complete(chunk);
         this.totalChunksPublished.incrementAndGet();
         GenerationScheduler.getInstance().checkLogMetrics();

@@ -21,7 +21,7 @@ import java.lang.reflect.Method;
 public class OTGParallelContext {
 
     public static final java.util.concurrent.locks.ReentrantLock OTG_STRUCTURE_LOCK = new java.util.concurrent.locks.ReentrantLock();
-    private static final ThreadLocal<ChunkProviderOTG> THREAD_LOCAL_PROVIDER = new ThreadLocal<>();
+    private static final ThreadLocal<java.util.Map<Integer, ChunkProviderOTG>> THREAD_LOCAL_PROVIDERS = ThreadLocal.withInitial(java.util.HashMap::new);
     private static Constructor<ForgeChunkBuffer> bufferConstructor;
     private static Method toChunkMethod;
     private static boolean reflectionInit = false;
@@ -44,10 +44,21 @@ public class OTGParallelContext {
     }
 
     public static ChunkProviderOTG getProvider(ForgeWorld world) {
-        ChunkProviderOTG provider = THREAD_LOCAL_PROVIDER.get();
-        if (provider == null && world != null) {
+        if (world == null) {
+            return null;
+        }
+        int dim = 0;
+        try {
+            if (world.getWorld() != null && world.getWorld().provider != null) {
+                dim = world.getWorld().provider.getDimension();
+            }
+        } catch (Throwable ignored) {
+        }
+        java.util.Map<Integer, ChunkProviderOTG> map = THREAD_LOCAL_PROVIDERS.get();
+        ChunkProviderOTG provider = map.get(dim);
+        if (provider == null) {
             provider = new ChunkProviderOTG(world.getConfigs(), (LocalWorld) world);
-            THREAD_LOCAL_PROVIDER.set(provider);
+            map.put(dim, provider);
         }
         return provider;
     }
@@ -99,6 +110,6 @@ public class OTGParallelContext {
     }
 
     public static void clear() {
-        THREAD_LOCAL_PROVIDER.remove();
+        THREAD_LOCAL_PROVIDERS.get().clear();
     }
 }

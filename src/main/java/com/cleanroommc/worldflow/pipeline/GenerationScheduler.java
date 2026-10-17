@@ -112,8 +112,9 @@ public class GenerationScheduler {
         // 5. In-flight backpressure / memory guard: Cap maximum concurrent in-flight generations
         int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
         boolean isServerThread = world.getMinecraftServer() != null && world.getMinecraftServer().isCallingFromMinecraftThread();
+        boolean isWorkerThread = Thread.currentThread().getName().startsWith("WorldFlow-");
 
-        if (this.inFlight.size() >= maxInFlight) {
+        if (this.inFlight.size() >= maxInFlight && !isWorkerThread) {
             if (!isServerThread) {
                 // Background callers (e.g. bench or async threads): throttle smoothly
                 while (this.inFlight.size() >= maxInFlight) {
@@ -180,8 +181,10 @@ public class GenerationScheduler {
                 proto.setUnderlyingChunk(generatedChunk);
             }
             holder.setCurrentStatus(ChunkStatus.CARVERS);
+            holder.getCarversFuture().complete(proto.getChunk());
         } catch (Throwable t) {
             WorldFlow.LOGGER.warn("[WorldFlow] Off-thread error in base terrain generation for chunk [{}, {}], falling back to main-thread serial", pos.x, pos.z, t);
+            holder.getCarversFuture().complete(proto.getChunk());
             fallbackToMainThreadSerial(holder);
             return;
         } finally {
@@ -230,41 +233,41 @@ public class GenerationScheduler {
                     neighbourhood.put(nKey, nHolder.getProtoChunk());
                 } else {
                     allReady = false;
-                    // Request neighbour to reach at least CARVERS
-                    CompletableFuture<Chunk> nf = requestChunk(world, nx, nz, ChunkStatus.CARVERS, GenerationPriority.PLAYER);
-                    neighbourFutures.add(nf);
+                    // Request neighbour to reach at least CARVERS and depend on its carversFuture
+                    if (nHolder != null) {
+                        neighbourFutures.add(nHolder.getCarversFuture());
+                    } else {
+                        requestChunk(world, nx, nz, ChunkStatus.CARVERS, GenerationPriority.PLAYER);
+                        StatusHolder newlyAdded = this.inFlight.get(nKey);
+                        if (newlyAdded != null) {
+                            neighbourFutures.add(newlyAdded.getCarversFuture());
+                        }
+                    }
                 }
             }
         }
 
-        IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
-        boolean isSerialized = CompatRegistry.INSTANCE.getSafetyLevel(generator) == GeneratorSafetyLevel.SERIALIZE;
-
         if (allReady) {
-            if (isSerialized) {
-                world.addScheduledTask(() -> executeFeatures(holder, neighbourhood));
-            } else {
-                GenerationWorkerPool.getInstance().executeWorker(holder, () -> executeFeatures(holder, neighbourhood));
-            }
+            GenerationWorkerPool.getInstance().executeWorker(holder, () -> executeFeatures(holder, neighbourhood));
         } else {
-            // Wait for all missing neighbours to reach CARVERS, then schedule features
+            // Wait for all missing neighbours to reach CARVERS, then schedule features on worker pool
             CompletableFuture.allOf(neighbourFutures.toArray(new CompletableFuture[0]))
                     .thenRunAsync(() -> {
                         for (int dx = -1; dx <= 1; dx++) {
                             for (int dz = -1; dz <= 1; dz++) {
                                 long nKey = ChunkPos.asLong(cx + dx, cz + dz);
+                                Chunk loaded = world.getChunkProvider().getLoadedChunk(cx + dx, cz + dz);
+                                if (loaded != null) {
+                                    continue;
+                                }
                                 StatusHolder nHolder = this.inFlight.get(nKey);
                                 if (nHolder != null) {
                                     neighbourhood.put(nKey, nHolder.getProtoChunk());
                                 }
                             }
                         }
-                        if (isSerialized) {
-                            world.addScheduledTask(() -> executeFeatures(holder, neighbourhood));
-                        } else {
-                            executeFeatures(holder, neighbourhood);
-                        }
-                    }, isSerialized ? world::addScheduledTask : r -> GenerationWorkerPool.getInstance().executeWorker(holder, r));
+                        executeFeatures(holder, neighbourhood);
+                    }, r -> GenerationWorkerPool.getInstance().executeWorker(holder, r));
         }
     }
 
@@ -335,6 +338,7 @@ public class GenerationScheduler {
                 Chunk loaded = world.getChunkProvider().getLoadedChunk(pos.x, pos.z);
                 if (loaded != null) {
                     holder.setCurrentStatus(ChunkStatus.FULL);
+                    holder.getCarversFuture().complete(loaded);
                     holder.getFuture().complete(loaded);
                     removeInFlight(holder.getChunkKey());
                     return;
@@ -343,6 +347,7 @@ public class GenerationScheduler {
                 Chunk chunk = world.getChunkProvider().provideChunk(pos.x, pos.z);
                 holder.getProtoChunk().setUnderlyingChunk(chunk);
                 holder.getProtoChunk().setTerrainPopulated(true);
+                holder.getCarversFuture().complete(chunk);
                 PublishManager.INSTANCE.publishChunk(world, holder);
             } catch (Throwable fallbackErr) {
                 WorldFlow.LOGGER.error("[WorldFlow] Main-thread serial fallback failed for chunk [{}, {}]", pos.x, pos.z, fallbackErr);
@@ -350,6 +355,7 @@ public class GenerationScheduler {
                 if (fallbackChunk == null) {
                     fallbackChunk = new Chunk(world, pos.x, pos.z);
                 }
+                holder.getCarversFuture().complete(fallbackChunk);
                 holder.getFuture().complete(fallbackChunk);
                 removeInFlight(holder.getChunkKey());
             }

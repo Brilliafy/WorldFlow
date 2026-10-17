@@ -20,6 +20,13 @@ import net.minecraft.world.gen.structure.MapGenVillage;
 import net.minecraft.world.gen.structure.StructureOceanMonument;
 import net.minecraft.world.gen.structure.WoodlandMansion;
 
+import net.minecraft.world.gen.NoiseGeneratorOctaves;
+import net.minecraft.world.gen.NoiseGeneratorPerlin;
+import net.minecraft.world.gen.NoiseGeneratorSimplex;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.terraingen.InitNoiseGensEvent;
+
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.WeakHashMap;
@@ -43,7 +50,7 @@ public class WorkerGeneratorContext {
     public final Random rand = new Random();
 
     private WoodlandMansion woodlandMansion;
-    private final Map<WorldServer, IChunkGenerator> chunkGenerators = new WeakHashMap<>();
+    private final Map<Integer, IChunkGenerator> chunkGenerators = new HashMap<>();
     private final Map<World, BiomeProvider> biomeProviders = new WeakHashMap<>();
 
     public WoodlandMansion getWoodlandMansion(ChunkGeneratorOverworld provider) {
@@ -54,14 +61,67 @@ public class WorkerGeneratorContext {
     }
 
     public IChunkGenerator getChunkGenerator(WorldServer world) {
-        return this.chunkGenerators.computeIfAbsent(world, w -> {
-            try {
-                return w.provider.createChunkGenerator();
-            } catch (Throwable t) {
-                WorldFlow.LOGGER.warn("[WorldFlow] Failed to create thread-local chunk generator for dimension {}, falling back to provider generator", w.provider.getDimension(), t);
-                return w.getChunkProvider().chunkGenerator;
+        if (world == null) {
+            return null;
+        }
+        int dim = world.provider != null ? world.provider.getDimension() : 0;
+        IChunkGenerator gen = this.chunkGenerators.get(dim);
+        if (gen != null) {
+            return gen;
+        }
+
+        try {
+            if (world.getChunkProvider() != null && world.getChunkProvider().chunkGenerator != null) {
+                gen = world.getChunkProvider().chunkGenerator;
+            } else if (world.provider != null) {
+                gen = world.provider.createChunkGenerator();
             }
-        });
+        } catch (Throwable t) {
+            WorldFlow.LOGGER.warn("[WorldFlow] Failed to initialize chunk generator for dimension {}, falling back to provider generator", dim, t);
+        }
+
+        if (gen == null && world.getChunkProvider() != null) {
+            gen = world.getChunkProvider().chunkGenerator;
+        }
+
+        if (gen != null) {
+            this.chunkGenerators.put(dim, gen);
+            fireInitNoiseGensEvent(world, gen);
+        }
+        return gen;
+    }
+
+    public static void fireInitNoiseGensEvent(World world, IChunkGenerator gen) {
+        try {
+            if (world == null) {
+                return;
+            }
+            Random r = new Random(world.getSeed());
+            NoiseGeneratorOctaves lperlin1 = new NoiseGeneratorOctaves(r, 16);
+            NoiseGeneratorOctaves lperlin2 = new NoiseGeneratorOctaves(r, 16);
+            NoiseGeneratorOctaves perlin = new NoiseGeneratorOctaves(r, 8);
+            NoiseGeneratorOctaves scale = new NoiseGeneratorOctaves(r, 10);
+            NoiseGeneratorOctaves depth = new NoiseGeneratorOctaves(r, 16);
+
+            InitNoiseGensEvent.Context ctx;
+            if (world.provider instanceof WorldProviderHell) {
+                NoiseGeneratorOctaves perlin2 = new NoiseGeneratorOctaves(r, 10);
+                NoiseGeneratorOctaves perlin3 = new NoiseGeneratorOctaves(r, 16);
+                ctx = new InitNoiseGensEvent.ContextHell(lperlin1, lperlin2, perlin, perlin2, perlin3, scale, depth);
+            } else if (world.provider instanceof WorldProviderEnd) {
+                NoiseGeneratorSimplex island = new NoiseGeneratorSimplex(r);
+                ctx = new InitNoiseGensEvent.ContextEnd(lperlin1, lperlin2, perlin, scale, depth, island);
+            } else {
+                NoiseGeneratorPerlin height = new NoiseGeneratorPerlin(r, 4);
+                NoiseGeneratorOctaves forest = new NoiseGeneratorOctaves(r, 8);
+                ctx = new InitNoiseGensEvent.ContextOverworld(lperlin1, lperlin2, perlin, height, scale, depth, forest);
+            }
+
+            InitNoiseGensEvent<?> event = new InitNoiseGensEvent<>(world, r, ctx);
+            MinecraftForge.TERRAIN_GEN_BUS.post(event);
+        } catch (Throwable t) {
+            WorldFlow.LOGGER.debug("[WorldFlow] Handled exception firing InitNoiseGensEvent", t);
+        }
     }
 
     public BiomeProvider getBiomeProvider(World world) {
