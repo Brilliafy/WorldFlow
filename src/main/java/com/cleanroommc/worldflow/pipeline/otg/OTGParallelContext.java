@@ -20,6 +20,7 @@ import java.lang.reflect.Method;
  */
 public class OTGParallelContext {
 
+    public static final java.util.concurrent.locks.ReentrantLock OTG_STRUCTURE_LOCK = new java.util.concurrent.locks.ReentrantLock();
     private static final ThreadLocal<ChunkProviderOTG> THREAD_LOCAL_PROVIDER = new ThreadLocal<>();
     private static Constructor<ForgeChunkBuffer> bufferConstructor;
     private static Method toChunkMethod;

@@ -10,6 +10,7 @@ import net.minecraft.world.gen.ChunkProviderServer;
 import com.cleanroommc.worldflow.pipeline.compat.CompatRegistry;
 import com.cleanroommc.worldflow.pipeline.compat.GeneratorSafetyLevel;
 import com.cleanroommc.worldflow.pipeline.isolation.WorkerGeneratorContext;
+import com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext;
 import net.minecraft.world.gen.IChunkGenerator;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.terraingen.PopulateChunkEvent;
@@ -234,7 +235,26 @@ public class GenerationScheduler {
             }
 
             // 2. Standard population (ores, flora, structures)
-            generator.populate(pos.x, pos.z);
+            GeneratorSafetyLevel genSafety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
+            if (genSafety == GeneratorSafetyLevel.SERIALIZE) {
+                this.serializedCount.incrementAndGet();
+                try {
+                    GenerationWorkerPool.getInstance().submitSerializer(() -> {
+                        OTGParallelContext.OTG_STRUCTURE_LOCK.lock();
+                        try {
+                            generator.populate(pos.x, pos.z);
+                        } finally {
+                            OTGParallelContext.OTG_STRUCTURE_LOCK.unlock();
+                        }
+                    }).get(60, TimeUnit.SECONDS);
+                } catch (Throwable t) {
+                    WorldFlow.LOGGER.warn("[WorldFlow] Serialized populate failed/timed out on chunk [{}, {}]", pos.x, pos.z, t);
+                    fallbackToMainThreadSerial(holder);
+                    return;
+                }
+            } else {
+                generator.populate(pos.x, pos.z);
+            }
 
             // 3. Forge GameRegistry world generators (thread-safe and serialized per-generator)
             generateModWorldIsolated(pos.x, pos.z, world, generator, provider, workerRand);
@@ -415,6 +435,33 @@ public class GenerationScheduler {
 
     public void removeInFlight(long key) {
         this.inFlight.remove(key);
+    }
+
+    public void quiesceAndDrain(WorldServer world, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        // 1. Await or complete in-flight chunks belonging to this world
+        for (Map.Entry<Long, StatusHolder> entry : this.inFlight.entrySet()) {
+            StatusHolder holder = entry.getValue();
+            if (holder != null && holder.getWorld() == world && !holder.isDone()) {
+                long remaining = Math.max(10, deadline - System.currentTimeMillis());
+                try {
+                    holder.getFuture().get(remaining, TimeUnit.MILLISECONDS);
+                } catch (Throwable ignored) {
+                    Chunk chunk = holder.getProtoChunk().getChunk();
+                    if (chunk != null) {
+                        PublishManager.INSTANCE.publishChunk(world, holder);
+                    }
+                }
+            }
+        }
+        // 2. Drain serializer queue
+        try {
+            long remaining = Math.max(50, deadline - System.currentTimeMillis());
+            GenerationWorkerPool.getInstance().submitSerializer(() -> {}).get(remaining, TimeUnit.MILLISECONDS);
+        } catch (Throwable ignored) {
+        }
+        // 3. Flush all staged blocks for this dimension
+        com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer.INSTANCE.flushAll(world);
     }
 
     public int getInFlightCount() {

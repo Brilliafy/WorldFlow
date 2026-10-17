@@ -6,7 +6,8 @@
   "minVersion": "0.8.5",
   "compatibilityLevel": "JAVA_8",
   "mixins": [
-    "OTGChunkGeneratorMixin"
+    "OTGChunkGeneratorMixin",
+    "CustomStructureCacheMixin"
   ],
   "server": [],
   "client": []

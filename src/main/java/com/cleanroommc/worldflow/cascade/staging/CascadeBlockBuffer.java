@@ -115,6 +115,23 @@ public class CascadeBlockBuffer {
         return count;
     }
 
+    public int flushAll(WorldServer world) {
+        if (world == null) return 0;
+        int dim = world.provider.getDimension();
+        Map<ChunkPos, List<StagedBlock>> dimMap = memoryStaging.get(dim);
+        if (dimMap == null || dimMap.isEmpty()) {
+            return 0;
+        }
+        int totalFlushed = 0;
+        for (ChunkPos cp : new ArrayList<>(dimMap.keySet())) {
+            Chunk loaded = world.getChunkProvider().getLoadedChunk(cp.x, cp.z);
+            if (loaded != null) {
+                totalFlushed += flushChunk(world, loaded);
+            }
+        }
+        return totalFlushed;
+    }
+
     public void clear() {
         memoryStaging.clear();
     }
