@@ -135,6 +135,7 @@ public class PublishManager {
         holder.setCurrentStatus(ChunkStatus.FULL);
         holder.getFuture().complete(chunk);
         this.totalChunksPublished.incrementAndGet();
+        GenerationScheduler.getInstance().checkLogMetrics();
 
         // 8. Cleanup from in-flight tracker
         GenerationScheduler.getInstance().removeInFlight(key);

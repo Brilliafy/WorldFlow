@@ -60,6 +60,9 @@ public abstract class OTGChunkGeneratorMixin {
             cancellable = true,
             remap = false)
     private void cascadeFix$onOTGSetBlock(int x, int y, int z, LocalMaterialData material, NamedBinaryTag metaDataTag, CallbackInfo ci) {
+        if (!com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
         if (!ModConfig.GENERAL.enableCascadeFix || !ModConfig.GENERAL.stageOTGBlocks) {
             return;
         }
@@ -94,11 +97,17 @@ public abstract class OTGChunkGeneratorMixin {
 
     @Inject(method = "func_185931_b", at = @At("HEAD"), remap = false)
     private void cascadeFix$onOTGPopulateStart(int chunkX, int chunkZ, CallbackInfo ci) {
+        if (!com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
         GenerationContext.enterPopulate(chunkX, chunkZ, "OTG");
     }
 
     @Inject(method = "func_185931_b", at = @At("RETURN"), remap = false)
     private void cascadeFix$onOTGPopulateEnd(int chunkX, int chunkZ, CallbackInfo ci) {
+        if (!com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
         GenerationContext.exitPopulate();
 
         net.minecraft.world.World rawWorld = this.world.getWorld();

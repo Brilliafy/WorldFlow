@@ -63,10 +63,38 @@ public class OTGParallelContext {
             ForgeChunkBuffer buffer = bufferConstructor.newInstance(coord);
             ChunkProviderOTG provider = getProvider(world);
             provider.generate((ChunkBuffer) buffer);
-            return (Chunk) toChunkMethod.invoke(buffer, world.getWorld());
+            Chunk chunk = (Chunk) toChunkMethod.invoke(buffer, world.getWorld());
+            if (chunk != null) {
+                fillBiomeArray(world, chunk);
+                chunk.generateSkylightMap();
+            }
+            return chunk;
         } catch (Throwable t) {
             WorldFlow.LOGGER.error("[WorldFlow] Error during concurrent OTG chunk generation [{}, {}]", chunkX, chunkZ, t);
             return null;
+        }
+    }
+
+    public static void fillBiomeArray(ForgeWorld world, Chunk chunk) {
+        if (world == null || chunk == null) {
+            return;
+        }
+        byte[] chunkBiomeArray = chunk.getBiomeArray();
+        com.pg85.otg.network.ConfigProvider configProvider = world.getConfigs();
+        com.pg85.otg.generator.biome.BiomeGenerator biomeGenerator = world.getBiomeGenerator();
+        if (configProvider == null || biomeGenerator == null) {
+            return;
+        }
+        int[] biomeShortArray;
+        synchronized (biomeGenerator) {
+            biomeShortArray = biomeGenerator.getBiomes(null, chunk.x * 16, chunk.z * 16, 16, 16, com.pg85.otg.generator.biome.OutputType.DEFAULT_FOR_WORLD);
+        }
+        if (biomeShortArray != null) {
+            for (int i = 0; i < chunkBiomeArray.length && i < biomeShortArray.length; ++i) {
+                int generationId = biomeShortArray[i];
+                com.pg85.otg.common.LocalBiome biome = configProvider.getBiomeByOTGIdOrNull(generationId);
+                chunkBiomeArray[i] = (byte) (biome != null ? biome.getIds().getSavedId() : 0);
+            }
         }
     }
 

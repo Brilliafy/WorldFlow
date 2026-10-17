@@ -146,21 +146,6 @@ public abstract class WorldMixin {
         }
     }
 
-    @Inject(method = "getBiomeProvider",
-            at = @At("HEAD"),
-            cancellable = true)
-    private void worldflow$redirectBiomeProvider(CallbackInfoReturnable<net.minecraft.world.biome.BiomeProvider> cir) {
-        if (!ThreadLocalWorldView.isGenerating()) {
-            return;
-        }
-        if (!this.isRemote && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
-            net.minecraft.world.biome.BiomeProvider workerProvider = com.cleanroommc.worldflow.pipeline.isolation.WorkerGeneratorContext.get().getBiomeProvider((World) (Object) this);
-            if (workerProvider != null) {
-                cir.setReturnValue(workerProvider);
-            }
-        }
-    }
-
     @Inject(method = "spawnEntity",
             at = @At("HEAD"),
             cancellable = true)

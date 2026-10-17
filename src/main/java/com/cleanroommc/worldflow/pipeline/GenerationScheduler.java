@@ -153,6 +153,7 @@ public class GenerationScheduler {
             ThreadLocalWorldView.exit();
             this.totalBaseGenNanos.addAndGet(System.nanoTime() - startNanos);
             this.totalBaseGenCount.incrementAndGet();
+            checkLogMetrics();
         }
 
         // If target was only CARVERS (e.g. neighbour dependency), complete future now
@@ -276,6 +277,7 @@ public class GenerationScheduler {
             ThreadLocalWorldView.exit();
             this.totalFeaturesNanos.addAndGet(System.nanoTime() - startNanos);
             this.totalFeaturesCount.incrementAndGet();
+            checkLogMetrics();
         }
 
         // Ready for publish to main thread
@@ -375,34 +377,48 @@ public class GenerationScheduler {
         checkLogMetrics();
     }
 
-    private void checkLogMetrics() {
+    public void checkLogMetrics() {
         long now = System.currentTimeMillis();
         long last = this.lastMetricsLog.get();
         if (now - last > 30000L && this.lastMetricsLog.compareAndSet(last, now)) {
-            long totalPublished = PublishManager.INSTANCE.totalChunksPublished.get();
-            double elapsedSec = Math.max(1.0, (now - this.pipelineStartTimeMs) / 1000.0);
-            double chunksPerSec = totalPublished / elapsedSec;
-            double chunksPerMin = chunksPerSec * 60.0;
-
-            long baseCount = this.totalBaseGenCount.get();
-            double avgBaseMs = baseCount > 0 ? (this.totalBaseGenNanos.get() / 1_000_000.0) / baseCount : 0.0;
-
-            long featCount = this.totalFeaturesCount.get();
-            double avgFeatMs = featCount > 0 ? (this.totalFeaturesNanos.get() / 1_000_000.0) / featCount : 0.0;
-
-            WorldFlow.LOGGER.info(String.format(
-                    "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | In-Flight: %d | Parallel: %d | Serialized: %d | Active Workers: %d",
-                    chunksPerSec,
-                    chunksPerMin,
-                    totalPublished,
-                    avgBaseMs,
-                    avgFeatMs,
-                    this.inFlight.size(),
-                    this.parallelCount.get(),
-                    this.serializedCount.get(),
-                    GenerationWorkerPool.getInstance().getActiveWorkerCount()
-            ));
+            logMetricsNow();
         }
+    }
+
+    public void forceLogMetrics() {
+        this.lastMetricsLog.set(System.currentTimeMillis());
+        logMetricsNow();
+    }
+
+    private void logMetricsNow() {
+        long now = System.currentTimeMillis();
+        long totalPublished = PublishManager.INSTANCE.totalChunksPublished.get();
+        long baseCount = this.totalBaseGenCount.get();
+        long featCount = this.totalFeaturesCount.get();
+
+        if (totalPublished == 0 && baseCount == 0 && featCount == 0) {
+            return;
+        }
+
+        double elapsedSec = Math.max(1.0, (now - this.pipelineStartTimeMs) / 1000.0);
+        double chunksPerSec = totalPublished / elapsedSec;
+        double chunksPerMin = chunksPerSec * 60.0;
+
+        double avgBaseMs = baseCount > 0 ? (this.totalBaseGenNanos.get() / 1_000_000.0) / baseCount : 0.0;
+        double avgFeatMs = featCount > 0 ? (this.totalFeaturesNanos.get() / 1_000_000.0) / featCount : 0.0;
+
+        WorldFlow.LOGGER.info(String.format(
+                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | In-Flight: %d | Parallel: %d | Serialized: %d | Active Workers: %d",
+                chunksPerSec,
+                chunksPerMin,
+                totalPublished,
+                avgBaseMs,
+                avgFeatMs,
+                this.inFlight.size(),
+                this.parallelCount.get(),
+                this.serializedCount.get(),
+                GenerationWorkerPool.getInstance().getActiveWorkerCount()
+        ));
     }
 
     @Nullable
@@ -474,6 +490,8 @@ public class GenerationScheduler {
         }
         // 3. Flush all staged blocks for this dimension
         com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer.INSTANCE.flushAll(world);
+        // 4. Force emit final generation metrics
+        forceLogMetrics();
     }
 
     public int getInFlightCount() {

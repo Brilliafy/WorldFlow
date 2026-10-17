@@ -66,6 +66,12 @@ public class WorkerGeneratorContext {
 
     public BiomeProvider getBiomeProvider(World world) {
         return this.biomeProviders.computeIfAbsent(world, w -> {
+            try {
+                if (w.provider != null && w.provider.getBiomeProvider() != null) {
+                    return w.provider.getBiomeProvider();
+                }
+            } catch (Throwable ignored) {
+            }
             if (w.provider instanceof WorldProviderHell) {
                 return new BiomeProviderSingle(Biomes.HELL);
             } else if (w.provider instanceof WorldProviderEnd) {

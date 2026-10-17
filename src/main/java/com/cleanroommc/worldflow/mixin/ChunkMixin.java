@@ -31,6 +31,9 @@ public abstract class ChunkMixin {
 
     @Inject(method = "populate(Lnet/minecraft/world/gen/IChunkGenerator;)V", at = @At("HEAD"))
     private void cascadeFix$onChunkPopulateHead(IChunkGenerator generator, CallbackInfo ci) {
+        if (!com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
         if (ModConfig.GENERAL.enableCascadeFix && ModConfig.GENERAL.stageForgeDecorators) {
             String genName = generator != null ? generator.getClass().getSimpleName() : "VanillaChunkGen";
             GenerationContext.enterPopulate(this.x, this.z, genName);
@@ -39,6 +42,9 @@ public abstract class ChunkMixin {
 
     @Inject(method = "populate(Lnet/minecraft/world/gen/IChunkGenerator;)V", at = @At("RETURN"))
     private void cascadeFix$onChunkPopulateReturn(IChunkGenerator generator, CallbackInfo ci) {
+        if (!com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
         if (ModConfig.GENERAL.enableCascadeFix && ModConfig.GENERAL.stageForgeDecorators) {
             GenerationContext.exitPopulate();
             if (this.world instanceof WorldServer) {
