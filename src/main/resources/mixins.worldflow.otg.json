@@ -7,7 +7,7 @@
   "compatibilityLevel": "JAVA_8",
   "mixins": [
     "OTGChunkGeneratorMixin",
-    "CustomStructureCacheMixin"
+    "ForgeEngineMixin"
   ],
   "server": [],
   "client": []

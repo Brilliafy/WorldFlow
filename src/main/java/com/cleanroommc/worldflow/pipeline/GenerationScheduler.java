@@ -194,8 +194,15 @@ public class GenerationScheduler {
             }
         }
 
+        IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
+        boolean isSerialized = CompatRegistry.INSTANCE.getSafetyLevel(generator) == GeneratorSafetyLevel.SERIALIZE;
+
         if (allReady) {
-            GenerationWorkerPool.getInstance().executeWorker(() -> executeFeatures(holder, neighbourhood));
+            if (isSerialized) {
+                GenerationWorkerPool.getInstance().executeSerializer(() -> executeFeatures(holder, neighbourhood));
+            } else {
+                GenerationWorkerPool.getInstance().executeWorker(() -> executeFeatures(holder, neighbourhood));
+            }
         } else {
             // Wait for all missing neighbours to reach CARVERS, then schedule features
             CompletableFuture.allOf(neighbourFutures.toArray(new CompletableFuture[0]))
@@ -210,7 +217,7 @@ public class GenerationScheduler {
                             }
                         }
                         executeFeatures(holder, neighbourhood);
-                    }, GenerationWorkerPool.getInstance()::executeWorker);
+                    }, isSerialized ? GenerationWorkerPool.getInstance()::executeSerializer : GenerationWorkerPool.getInstance()::executeWorker);
         }
     }
 
@@ -238,19 +245,11 @@ public class GenerationScheduler {
             GeneratorSafetyLevel genSafety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
             if (genSafety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
+                OTGParallelContext.OTG_STRUCTURE_LOCK.lock();
                 try {
-                    GenerationWorkerPool.getInstance().submitSerializer(() -> {
-                        OTGParallelContext.OTG_STRUCTURE_LOCK.lock();
-                        try {
-                            generator.populate(pos.x, pos.z);
-                        } finally {
-                            OTGParallelContext.OTG_STRUCTURE_LOCK.unlock();
-                        }
-                    }).get(60, TimeUnit.SECONDS);
-                } catch (Throwable t) {
-                    WorldFlow.LOGGER.warn("[WorldFlow] Serialized populate failed/timed out on chunk [{}, {}]", pos.x, pos.z, t);
-                    fallbackToMainThreadSerial(holder);
-                    return;
+                    generator.populate(pos.x, pos.z);
+                } finally {
+                    OTGParallelContext.OTG_STRUCTURE_LOCK.unlock();
                 }
             } else {
                 generator.populate(pos.x, pos.z);
