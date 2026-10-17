@@ -32,7 +32,7 @@ public class CommandWorldFlow extends CommandBase {
 
     @Override
     public String getUsage(ICommandSender sender) {
-        return "/worldflow <noise|cascade|pregen|pipeline|dumpchunk> ...";
+        return "/worldflow <noise|cascade|pregen|pipeline|dumpchunk|diffarea|bench> ...";
     }
 
     @Override
@@ -71,6 +71,13 @@ public class CommandWorldFlow extends CommandBase {
                 return;
             case "dumpchunk":
                 executeDumpChunk(server, sender, rest);
+                return;
+            case "diffarea":
+                executeDiffArea(server, sender, rest);
+                return;
+            case "bench":
+            case "benchmark":
+                executeBench(server, sender, rest);
                 return;
             default:
                 sender.sendMessage(new TextComponentString(TextFormatting.RED + "Usage: " + getUsage(sender)));
@@ -306,10 +313,82 @@ public class CommandWorldFlow extends CommandBase {
         com.cleanroommc.worldflow.debug.ChunkDumper.executeDump(world, x, z, mode, sender);
     }
 
+    private void executeDiffArea(MinecraftServer server, ICommandSender sender, String[] args) {
+        if (!sender.canUseCommand(2, getName())) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "You do not have permission to use the diffarea command."));
+            return;
+        }
+        int radius = 16;
+        int sampleStep = 1;
+        if (args.length >= 1) {
+            try {
+                radius = Math.max(1, Integer.parseInt(args[0]));
+            } catch (NumberFormatException e) {
+                sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid radius: " + args[0]));
+                return;
+            }
+        }
+        if (args.length >= 2) {
+            try {
+                sampleStep = Math.max(1, Integer.parseInt(args[1]));
+            } catch (NumberFormatException e) {
+                sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid sampleEveryN: " + args[1]));
+                return;
+            }
+        }
+        WorldServer world = (WorldServer) sender.getEntityWorld();
+        if (world == null && server.worlds.length > 0) {
+            world = server.worlds[0];
+        }
+        if (world == null) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "WorldServer not available."));
+            return;
+        }
+        int cx = sender.getPosition().getX() >> 4;
+        int cz = sender.getPosition().getZ() >> 4;
+        com.cleanroommc.worldflow.debug.ChunkDumper.executeDiffArea(server, world, cx, cz, radius, sampleStep, sender);
+    }
+
+    private void executeBench(MinecraftServer server, ICommandSender sender, String[] args) {
+        if (!sender.canUseCommand(2, getName())) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "You do not have permission to use the bench command."));
+            return;
+        }
+        int radius = 16;
+        int workers = 0;
+        if (args.length >= 1) {
+            try {
+                radius = Math.max(1, Integer.parseInt(args[0]));
+            } catch (NumberFormatException e) {
+                sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid radius: " + args[0]));
+                return;
+            }
+        }
+        if (args.length >= 2) {
+            try {
+                workers = Math.max(1, Integer.parseInt(args[1]));
+            } catch (NumberFormatException e) {
+                sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid workers count: " + args[1]));
+                return;
+            }
+        }
+        WorldServer world = (WorldServer) sender.getEntityWorld();
+        if (world == null && server.worlds.length > 0) {
+            world = server.worlds[0];
+        }
+        if (world == null) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "WorldServer not available."));
+            return;
+        }
+        int cx = sender.getPosition().getX() >> 4;
+        int cz = sender.getPosition().getZ() >> 4;
+        com.cleanroommc.worldflow.debug.BenchmarkRunner.executeBenchmark(server, world, cx, cz, radius, workers, sender);
+    }
+
     @Override
     public List<String> getTabCompletions(MinecraftServer server, ICommandSender sender, String[] args, @Nullable BlockPos targetPos) {
         if (args.length == 1) {
-            return getListOfStringsMatchingLastWord(args, "noise", "cascade", "pregen", "pipeline", "dumpchunk");
+            return getListOfStringsMatchingLastWord(args, "noise", "cascade", "pregen", "pipeline", "dumpchunk", "diffarea", "bench");
         }
         if (args.length == 2 && "cascade".equalsIgnoreCase(args[0])) {
             return getListOfStringsMatchingLastWord(args, "status", "info", "flush", "clear", "toggle", "reload");

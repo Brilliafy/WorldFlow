@@ -506,4 +506,28 @@ public class GenerationScheduler {
     public int getInFlightCount() {
         return this.inFlight.size();
     }
+
+    public long getParallelCount() {
+        return this.parallelCount.get();
+    }
+
+    public long getSerializedCount() {
+        return this.serializedCount.get();
+    }
+
+    public long getTotalBaseGenCount() {
+        return this.totalBaseGenCount.get();
+    }
+
+    public long getTotalBaseGenNanos() {
+        return this.totalBaseGenNanos.get();
+    }
+
+    public long getTotalFeaturesCount() {
+        return this.totalFeaturesCount.get();
+    }
+
+    public long getTotalFeaturesNanos() {
+        return this.totalFeaturesNanos.get();
+    }
 }

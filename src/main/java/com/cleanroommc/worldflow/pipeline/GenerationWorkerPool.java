@@ -116,6 +116,26 @@ public class GenerationWorkerPool {
         return Math.min(8, Math.max(1, cores - 1));
     }
 
+    public synchronized void setWorkerThreads(int count) {
+        if (!this.initialized) {
+            init();
+        }
+        int target = Math.max(1, count);
+        if (this.workerPool != null) {
+            if (target > this.workerPool.getMaximumPoolSize()) {
+                this.workerPool.setMaximumPoolSize(target);
+                this.workerPool.setCorePoolSize(target);
+            } else {
+                this.workerPool.setCorePoolSize(target);
+                this.workerPool.setMaximumPoolSize(target);
+            }
+        }
+        if (ModConfig.CONCURRENCY != null) {
+            ModConfig.CONCURRENCY.parallelWorkerThreads = target;
+        }
+        WorldFlow.LOGGER.info("[WorldFlow] Resized generation worker pool to {} threads.", target);
+    }
+
     public void executeWorker(Runnable command) {
         executeWorker(command, 0);
     }
