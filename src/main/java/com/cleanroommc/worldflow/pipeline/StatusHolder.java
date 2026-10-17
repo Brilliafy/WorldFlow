@@ -19,6 +19,7 @@ public class StatusHolder implements Comparable<StatusHolder> {
     private final ProtoChunk protoChunk;
     private final CompletableFuture<Chunk> future = new CompletableFuture<>();
     private final CompletableFuture<Chunk> carversFuture = new CompletableFuture<>();
+    private final CompletableFuture<Chunk> workerDoneFuture = new CompletableFuture<>();
 
     private volatile ChunkStatus targetStatus;
     private final AtomicInteger priorityScore = new AtomicInteger(0);
@@ -62,6 +63,14 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     public CompletableFuture<Chunk> getCarversFuture() {
         return this.carversFuture;
+    }
+
+    public CompletableFuture<Chunk> getWorkerDoneFuture() {
+        return this.workerDoneFuture;
+    }
+
+    public boolean isWorkerDone() {
+        return this.workerDoneFuture.isDone();
     }
 
     public GenerationPriority getInitialPriority() {

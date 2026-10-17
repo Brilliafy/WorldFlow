@@ -9,15 +9,19 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Manages thread pools for parallel chunk generation:
- * 1. General worker pool for independent stages (biomes, noise, surface, carvers, parallel-safe features).
- * 2. Dedicated serializer lever executor for SERIALIZE-marked generators (e.g. OTG/Recurrent Complex structures).
+ * 1. Dedicated BaseGen pool for pure-compute independent stages (biomes, noise, surface, carvers).
+ * 2. Dedicated Features pool for feature population (ores, flora, structures).
+ * 3. Dedicated GenLever pool for SERIALIZE-marked generators.
+ * 4. Dedicated Scheduler for timeouts and Deadlock Watchdog.
  */
 public class GenerationWorkerPool {
 
     private static final GenerationWorkerPool INSTANCE = new GenerationWorkerPool();
 
-    private ThreadPoolExecutor workerPool;
+    private ThreadPoolExecutor baseGenPool;
+    private ThreadPoolExecutor featuresPool;
     private ExecutorService genLeverExecutor;
+    private ScheduledExecutorService scheduler;
     private boolean initialized = false;
 
     public static class PrioritizedTask implements Runnable, Comparable<PrioritizedTask> {
@@ -64,7 +68,8 @@ public class GenerationWorkerPool {
         }
 
         int targetThreads = effectiveThreads();
-        AtomicInteger workerThreadId = new AtomicInteger(1);
+        AtomicInteger baseGenThreadId = new AtomicInteger(1);
+        AtomicInteger featuresThreadId = new AtomicInteger(1);
 
         Comparator<Runnable> taskComparator = (r1, r2) -> {
             int p1 = (r1 instanceof PrioritizedTask) ? ((PrioritizedTask) r1).getPriority() : 0;
@@ -78,20 +83,35 @@ public class GenerationWorkerPool {
             return Long.compare(t1, t2);
         };
 
-        this.workerPool = new ThreadPoolExecutor(
+        this.baseGenPool = new ThreadPoolExecutor(
                 targetThreads,
                 targetThreads,
                 60L, TimeUnit.SECONDS,
                 new PriorityBlockingQueue<>(1024, taskComparator),
                 r -> {
-                    Thread t = new Thread(r, "WorldFlow-GenWorker-" + workerThreadId.getAndIncrement());
+                    Thread t = new Thread(r, "WorldFlow-BaseGen-" + baseGenThreadId.getAndIncrement());
                     t.setDaemon(true);
                     t.setPriority(Thread.NORM_PRIORITY - 1);
                     return t;
                 },
                 new ThreadPoolExecutor.CallerRunsPolicy()
         );
-        this.workerPool.allowCoreThreadTimeOut(true);
+        this.baseGenPool.allowCoreThreadTimeOut(true);
+
+        this.featuresPool = new ThreadPoolExecutor(
+                targetThreads,
+                targetThreads,
+                60L, TimeUnit.SECONDS,
+                new PriorityBlockingQueue<>(1024, taskComparator),
+                r -> {
+                    Thread t = new Thread(r, "WorldFlow-Features-" + featuresThreadId.getAndIncrement());
+                    t.setDaemon(true);
+                    t.setPriority(Thread.NORM_PRIORITY - 1);
+                    return t;
+                },
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+        this.featuresPool.allowCoreThreadTimeOut(true);
 
         this.genLeverExecutor = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "WorldFlow-GenLever-0");
@@ -100,8 +120,15 @@ public class GenerationWorkerPool {
             return t;
         });
 
+        this.scheduler = Executors.newScheduledThreadPool(1, r -> {
+            Thread t = new Thread(r, "WorldFlow-Scheduler-0");
+            t.setDaemon(true);
+            t.setPriority(Thread.NORM_PRIORITY - 2);
+            return t;
+        });
+
         this.initialized = true;
-        WorldFlow.LOGGER.info("[WorldFlow] Generation worker pool initialized with {} parallel workers + 1 gen-lever serializer.", targetThreads);
+        WorldFlow.LOGGER.info("[WorldFlow] Generation worker pools initialized: {} BaseGen + {} Features workers, 1 gen-lever, 1 scheduler.", targetThreads, targetThreads);
     }
 
     public static int effectiveThreads() {
@@ -112,7 +139,6 @@ public class GenerationWorkerPool {
         if (cores <= 2) {
             return 1;
         }
-        // Auto default: cores - 1 (capped at 8 for standard stability)
         return Math.min(8, Math.max(1, cores - 1));
     }
 
@@ -121,50 +147,84 @@ public class GenerationWorkerPool {
             init();
         }
         int target = Math.max(1, count);
-        if (this.workerPool != null) {
-            if (target > this.workerPool.getMaximumPoolSize()) {
-                this.workerPool.setMaximumPoolSize(target);
-                this.workerPool.setCorePoolSize(target);
-            } else {
-                this.workerPool.setCorePoolSize(target);
-                this.workerPool.setMaximumPoolSize(target);
-            }
-        }
+        resizePool(this.baseGenPool, target);
+        resizePool(this.featuresPool, target);
         if (ModConfig.CONCURRENCY != null) {
             ModConfig.CONCURRENCY.parallelWorkerThreads = target;
         }
-        WorldFlow.LOGGER.info("[WorldFlow] Resized generation worker pool to {} threads.", target);
+        WorldFlow.LOGGER.info("[WorldFlow] Resized generation worker pools to {} BaseGen and {} Features threads.", target, target);
     }
 
-    public void executeWorker(Runnable command) {
-        executeWorker(command, 0);
+    private void resizePool(ThreadPoolExecutor pool, int target) {
+        if (pool != null) {
+            if (target > pool.getMaximumPoolSize()) {
+                pool.setMaximumPoolSize(target);
+                pool.setCorePoolSize(target);
+            } else {
+                pool.setCorePoolSize(target);
+                pool.setMaximumPoolSize(target);
+            }
+        }
     }
 
-    public void executeWorker(Runnable command, int priority) {
+    public void executeBaseGen(Runnable command) {
+        executeBaseGen(command, 0);
+    }
+
+    public void executeBaseGen(Runnable command, int priority) {
         if (!this.initialized) {
             init();
         }
         Runnable r = (command instanceof PrioritizedTask) ? command : new PrioritizedTask(command, priority);
-        this.workerPool.execute(r);
+        this.baseGenPool.execute(r);
+    }
+
+    public void executeBaseGen(StatusHolder holder, Runnable command) {
+        int priority = holder != null ? holder.getPriorityScore() : 0;
+        executeBaseGen(command, priority);
+    }
+
+    public void executeFeatures(Runnable command) {
+        executeFeatures(command, 0);
+    }
+
+    public void executeFeatures(Runnable command, int priority) {
+        if (!this.initialized) {
+            init();
+        }
+        Runnable r = (command instanceof PrioritizedTask) ? command : new PrioritizedTask(command, priority);
+        this.featuresPool.execute(r);
+    }
+
+    public void executeFeatures(StatusHolder holder, Runnable command) {
+        int priority = holder != null ? holder.getPriorityScore() : 0;
+        executeFeatures(command, priority);
+    }
+
+    public void executeWorker(Runnable command) {
+        executeFeatures(command, 0);
+    }
+
+    public void executeWorker(Runnable command, int priority) {
+        executeFeatures(command, priority);
     }
 
     public void executeWorker(StatusHolder holder, Runnable command) {
-        int priority = holder != null ? holder.getPriorityScore() : 0;
-        executeWorker(command, priority);
+        executeFeatures(holder, command);
     }
 
     public Future<?> submitWorker(Runnable task) {
         if (!this.initialized) {
             init();
         }
-        return this.workerPool.submit(new PrioritizedTask(task, 0));
+        return this.featuresPool.submit(new PrioritizedTask(task, 0));
     }
 
     public <T> Future<T> submitWorker(Callable<T> task) {
         if (!this.initialized) {
             init();
         }
-        return this.workerPool.submit(task);
+        return this.featuresPool.submit(task);
     }
 
     public void executeLever(Runnable command) {
@@ -189,21 +249,78 @@ public class GenerationWorkerPool {
         return submitLever(task);
     }
 
+    public void scheduleTimeout(CompletableFuture<?> future, long timeout, TimeUnit unit) {
+        if (!this.initialized) {
+            init();
+        }
+        if (future.isDone()) {
+            return;
+        }
+        this.scheduler.schedule(() -> {
+            if (!future.isDone()) {
+                future.completeExceptionally(new TimeoutException("Timed out after " + timeout + " " + unit));
+            }
+        }, timeout, unit);
+    }
+
+    public ScheduledFuture<?> scheduleWithFixedDelay(Runnable command, long initialDelay, long delay, TimeUnit unit) {
+        if (!this.initialized) {
+            init();
+        }
+        return this.scheduler.scheduleWithFixedDelay(command, initialDelay, delay, unit);
+    }
+
     public synchronized void shutdown() {
-        if (this.workerPool != null) {
-            this.workerPool.shutdown();
+        if (this.baseGenPool != null) {
+            this.baseGenPool.shutdown();
+        }
+        if (this.featuresPool != null) {
+            this.featuresPool.shutdown();
         }
         if (this.genLeverExecutor != null) {
             this.genLeverExecutor.shutdown();
         }
+        if (this.scheduler != null) {
+            this.scheduler.shutdown();
+        }
         this.initialized = false;
     }
 
+    public int getBaseGenActiveCount() {
+        return this.baseGenPool != null ? this.baseGenPool.getActiveCount() : 0;
+    }
+
+    public int getBaseGenQueueSize() {
+        return this.baseGenPool != null ? this.baseGenPool.getQueue().size() : 0;
+    }
+
+    public int getFeaturesActiveCount() {
+        return this.featuresPool != null ? this.featuresPool.getActiveCount() : 0;
+    }
+
+    public int getFeaturesQueueSize() {
+        return this.featuresPool != null ? this.featuresPool.getQueue().size() : 0;
+    }
+
+    public int getLeverActiveCount() {
+        if (this.genLeverExecutor instanceof ThreadPoolExecutor) {
+            return ((ThreadPoolExecutor) this.genLeverExecutor).getActiveCount();
+        }
+        return 0;
+    }
+
+    public int getLeverQueueSize() {
+        if (this.genLeverExecutor instanceof ThreadPoolExecutor) {
+            return ((ThreadPoolExecutor) this.genLeverExecutor).getQueue().size();
+        }
+        return 0;
+    }
+
     public int getActiveWorkerCount() {
-        return this.workerPool != null ? this.workerPool.getActiveCount() : 0;
+        return getBaseGenActiveCount() + getFeaturesActiveCount();
     }
 
     public int getQueueSize() {
-        return this.workerPool != null ? this.workerPool.getQueue().size() : 0;
+        return getBaseGenQueueSize() + getFeaturesQueueSize();
     }
 }

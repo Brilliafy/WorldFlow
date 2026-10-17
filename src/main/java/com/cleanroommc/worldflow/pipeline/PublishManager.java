@@ -140,8 +140,10 @@ public class PublishManager {
         GenerationScheduler.getInstance().totalChunksPipeline.incrementAndGet();
         holder.setCurrentStatus(ChunkStatus.FULL);
         holder.getCarversFuture().complete(chunk);
+        holder.getWorkerDoneFuture().complete(chunk);
         holder.getFuture().complete(chunk);
         this.totalChunksPublished.incrementAndGet();
+        GenerationScheduler.getInstance().invalidateCarverCache(key);
         GenerationScheduler.getInstance().checkLogMetrics();
 
         // 8. Cleanup from in-flight tracker

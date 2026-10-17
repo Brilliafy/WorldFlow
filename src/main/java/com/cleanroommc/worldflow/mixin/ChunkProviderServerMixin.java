@@ -63,18 +63,22 @@ public abstract class ChunkProviderServerMixin {
         long key = ChunkPos.asLong(x, z);
         StatusHolder holder = GenerationScheduler.getInstance().getInFlight(key);
         if (holder != null) {
-            if (holder.getProtoChunk() != null && holder.getProtoChunk().getChunk() != null && holder.isDone()) {
+            if (holder.isDone()) {
+                cir.setReturnValue(holder.getProtoChunk().getChunk());
+                return;
+            }
+            if (holder.isWorkerDone() || holder.getCurrentStatus().isAtLeast(com.cleanroommc.worldflow.pipeline.ChunkStatus.LIGHT)) {
                 PublishManager.INSTANCE.publishChunk(this.world, holder);
                 cir.setReturnValue(holder.getProtoChunk().getChunk());
                 return;
             }
-            // In flight: bump priority to IMMEDIATE and wait up to 50ms for completion
+            // In flight: bump priority to IMMEDIATE and wait up to 50ms for worker completion
             holder.bumpPriority(com.cleanroommc.worldflow.pipeline.GenerationPriority.IMMEDIATE);
             try {
-                Chunk chunk = holder.getFuture().get(50, java.util.concurrent.TimeUnit.MILLISECONDS);
-                if (chunk != null) {
+                holder.getWorkerDoneFuture().get(50, java.util.concurrent.TimeUnit.MILLISECONDS);
+                if (holder.getCurrentStatus().isAtLeast(com.cleanroommc.worldflow.pipeline.ChunkStatus.LIGHT)) {
                     PublishManager.INSTANCE.publishChunk(this.world, holder);
-                    cir.setReturnValue(chunk);
+                    cir.setReturnValue(holder.getProtoChunk().getChunk());
                     return;
                 }
             } catch (Throwable ignored) {
