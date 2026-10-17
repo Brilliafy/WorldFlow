@@ -192,178 +192,233 @@ public class ChunkDumper {
             return;
         }
 
-        Thread t = new Thread(() -> {
-            try {
-                runDiffAreaInternal(server, world, centerX, centerZ, radius, sampleStep, sender);
-            } finally {
-                DIFFING.set(false);
-            }
-        }, "WorldFlow-DiffArea");
-        t.setDaemon(true);
-        t.start();
-    }
-
-    public static void runDiffAreaInternal(net.minecraft.server.MinecraftServer server, WorldServer world, int centerX, int centerZ, int radius, int sampleStep, ICommandSender sender) {
         int step = Math.max(1, sampleStep);
-        int totalChunks = 0;
+        java.util.List<ChunkPos> targets = new java.util.ArrayList<>();
         for (int dx = -radius; dx <= radius; dx += step) {
             for (int dz = -radius; dz <= radius; dz += step) {
-                totalChunks++;
+                targets.add(new ChunkPos(centerX + dx, centerZ + dz));
             }
         }
 
         send(server, sender, TextFormatting.GOLD + String.format(
                 "[WorldFlow DiffArea] Checking area: radius=%d, sampleEveryN=%d (%d sample chunks) centered at [%d, %d]...",
-                radius, step, totalChunks, centerX, centerZ
+                radius, step, targets.size(), centerX, centerZ
         ));
 
-        int checked = 0;
-        int biomeMatches = 0;
-        int biomeDiffs = 0;
-        int hmMatches = 0;
-        int hmDiffs = 0;
-        int secMatches = 0;
-        int secDiffs = 0;
-        java.util.List<String> mismatchSamples = new java.util.ArrayList<>();
+        DiffAreaRunner runner = new DiffAreaRunner(server, world, centerX, centerZ, radius, step, targets, sender);
+        if (server != null) {
+            server.addScheduledTask(runner);
+        } else {
+            while (!runner.isComplete()) {
+                runner.run();
+            }
+        }
+    }
 
-        File dumpsDir = new File("dumps");
-        if (!dumpsDir.exists()) {
-            dumpsDir.mkdirs();
+    private static class DiffAreaRunner implements Runnable {
+        private final net.minecraft.server.MinecraftServer server;
+        private final WorldServer world;
+        private final int centerX;
+        private final int centerZ;
+        private final int radius;
+        private final int step;
+        private final java.util.List<ChunkPos> targets;
+        private final ICommandSender sender;
+        private final File dumpsDir;
+
+        private int currentIndex = 0;
+        private int checked = 0;
+        private int biomeMatches = 0;
+        private int biomeDiffs = 0;
+        private int hmMatches = 0;
+        private int hmDiffs = 0;
+        private int secMatches = 0;
+        private int secDiffs = 0;
+        private final java.util.List<String> mismatchSamples = new java.util.ArrayList<>();
+        private final long startTime;
+        private long lastLogTime;
+
+        public DiffAreaRunner(net.minecraft.server.MinecraftServer server, WorldServer world, int centerX, int centerZ, int radius, int step, java.util.List<ChunkPos> targets, ICommandSender sender) {
+            this.server = server;
+            this.world = world;
+            this.centerX = centerX;
+            this.centerZ = centerZ;
+            this.radius = radius;
+            this.step = step;
+            this.targets = targets;
+            this.sender = sender;
+            this.dumpsDir = new File("dumps");
+            if (!this.dumpsDir.exists()) {
+                this.dumpsDir.mkdirs();
+            }
+            this.startTime = System.currentTimeMillis();
+            this.lastLogTime = System.currentTimeMillis();
         }
 
-        long startTime = System.currentTimeMillis();
-        long lastLogTime = System.currentTimeMillis();
+        public boolean isComplete() {
+            return currentIndex >= targets.size();
+        }
 
-        for (int dx = -radius; dx <= radius; dx += step) {
-            for (int dz = -radius; dz <= radius; dz += step) {
-                int x = centerX + dx;
-                int z = centerZ + dz;
+        @Override
+        public void run() {
+            try {
+                long tickStart = System.currentTimeMillis();
+                int batchCount = 0;
 
-                Chunk inlineChunk = null;
-                Chunk pipeChunk = null;
+                while (currentIndex < targets.size() && batchCount < 16) {
+                    ChunkPos pos = targets.get(currentIndex++);
+                    batchCount++;
+                    int x = pos.x;
+                    int z = pos.z;
 
-                try {
-                    // Inline generation
-                    boolean wasGen = ThreadLocalWorldView.isGenerating();
-                    if (wasGen) ThreadLocalWorldView.exit();
-                    inlineChunk = world.getChunkProvider().chunkGenerator.generateChunk(x, z);
+                    Chunk inlineChunk = null;
+                    Chunk pipeChunk = null;
 
-                    // Pipeline generation
-                    ChunkPos pos = new ChunkPos(x, z);
-                    ProtoChunk proto = new ProtoChunk(world, x, z);
-                    ThreadLocalWorldView.enter(world, pos, proto, "DiffArea");
                     try {
-                        pipeChunk = WorkerGeneratorContext.get().getChunkGenerator(world).generateChunk(x, z);
-                    } finally {
-                        ThreadLocalWorldView.exit();
+                        // Inline generation on main server thread
+                        boolean wasGen = ThreadLocalWorldView.isGenerating();
+                        if (wasGen) ThreadLocalWorldView.exit();
+                        inlineChunk = world.getChunkProvider().chunkGenerator.generateChunk(x, z);
+
+                        // Pipeline generation
+                        ProtoChunk proto = new ProtoChunk(world, x, z);
+                        ThreadLocalWorldView.enter(world, pos, proto, "DiffArea");
+                        try {
+                            pipeChunk = WorkerGeneratorContext.get().getChunkGenerator(world).generateChunk(x, z);
+                        } finally {
+                            ThreadLocalWorldView.exit();
+                        }
+                    } catch (Throwable t) {
+                        WorldFlow.LOGGER.error("[WorldFlow] Error generating chunks during diffarea at [{}, {}]", x, z, t);
+                        continue;
                     }
-                } catch (Throwable t) {
-                    WorldFlow.LOGGER.error("[WorldFlow] Error generating chunks during diffarea at [{}, {}]", x, z, t);
-                    continue;
-                }
 
-                if (inlineChunk == null || pipeChunk == null) {
-                    continue;
-                }
+                    if (inlineChunk == null || pipeChunk == null) {
+                        continue;
+                    }
 
-                // Compare biomes
-                byte[] bA = inlineChunk.getBiomeArray();
-                byte[] bB = pipeChunk.getBiomeArray();
-                int bDiff = 0;
-                int minB = Math.min(bA.length, bB.length);
-                for (int i = 0; i < minB; i++) {
-                    if (bA[i] != bB[i]) bDiff++;
-                }
-                bDiff += Math.abs(bA.length - bB.length);
-                if (bDiff == 0) biomeMatches++; else biomeDiffs++;
+                    // Compare biomes
+                    byte[] bA = inlineChunk.getBiomeArray();
+                    byte[] bB = pipeChunk.getBiomeArray();
+                    int bDiff = 0;
+                    int minB = Math.min(bA.length, bB.length);
+                    for (int i = 0; i < minB; i++) {
+                        if (bA[i] != bB[i]) bDiff++;
+                    }
+                    bDiff += Math.abs(bA.length - bB.length);
+                    if (bDiff == 0) biomeMatches++; else biomeDiffs++;
 
-                // Compare heightmap
-                int[] hmA = inlineChunk.getHeightMap();
-                int[] hmB = pipeChunk.getHeightMap();
-                int hmDiff = 0;
-                int minHm = Math.min(hmA.length, hmB.length);
-                for (int i = 0; i < minHm; i++) {
-                    if (hmA[i] != hmB[i]) hmDiff++;
-                }
-                hmDiff += Math.abs(hmA.length - hmB.length);
-                if (hmDiff == 0) hmMatches++; else hmDiffs++;
+                    // Compare heightmap
+                    int[] hmA = inlineChunk.getHeightMap();
+                    int[] hmB = pipeChunk.getHeightMap();
+                    int hmDiff = 0;
+                    int minHm = Math.min(hmA.length, hmB.length);
+                    for (int i = 0; i < minHm; i++) {
+                        if (hmA[i] != hmB[i]) hmDiff++;
+                    }
+                    hmDiff += Math.abs(hmA.length - hmB.length);
+                    if (hmDiff == 0) hmMatches++; else hmDiffs++;
 
-                // Compare block states
-                int secDiff = 0;
-                BlockPos.MutableBlockPos mpos = new BlockPos.MutableBlockPos();
-                for (int by = 0; by < 256; by++) {
-                    for (int bx = 0; bx < 16; bx++) {
-                        for (int bz = 0; bz < 16; bz++) {
-                            mpos.setPos(bx, by, bz);
-                            IBlockState sA = inlineChunk.getBlockState(mpos);
-                            IBlockState sB = pipeChunk.getBlockState(mpos);
-                            if (sA != sB) {
-                                secDiff++;
+                    // Compare block states
+                    int secDiff = 0;
+                    BlockPos.MutableBlockPos mpos = new BlockPos.MutableBlockPos();
+                    for (int by = 0; by < 256; by++) {
+                        for (int bx = 0; bx < 16; bx++) {
+                            for (int bz = 0; bz < 16; bz++) {
+                                mpos.setPos(bx, by, bz);
+                                IBlockState sA = inlineChunk.getBlockState(mpos);
+                                IBlockState sB = pipeChunk.getBlockState(mpos);
+                                if (sA != sB) {
+                                    secDiff++;
+                                }
                             }
                         }
                     }
-                }
-                if (secDiff == 0) secMatches++; else secDiffs++;
+                    if (secDiff == 0) secMatches++; else secDiffs++;
 
-                checked++;
+                    checked++;
 
-                if (bDiff > 0 || hmDiff > 0 || secDiff > 0) {
-                    if (mismatchSamples.size() < 10) {
-                        mismatchSamples.add(String.format("[%d, %d] -> Biomes: %d diffs, HM: %d diffs, Sections: %d diffs", x, z, bDiff, hmDiff, secDiff));
+                    if (bDiff > 0 || hmDiff > 0 || secDiff > 0) {
+                        if (mismatchSamples.size() < 10) {
+                            mismatchSamples.add(String.format("[%d, %d] -> Biomes: %d diffs, HM: %d diffs, Sections: %d diffs", x, z, bDiff, hmDiff, secDiff));
+                        }
+                        // Write mismatch dumps
+                        writeChunkDump(inlineChunk, new File(dumpsDir, String.format("mismatch_%d_%d_inline.txt", x, z)), "INLINE");
+                        writeChunkDump(pipeChunk, new File(dumpsDir, String.format("mismatch_%d_%d_pipeline.txt", x, z)), "PIPELINE");
                     }
-                    // Write mismatch dumps
-                    writeChunkDump(inlineChunk, new File(dumpsDir, String.format("mismatch_%d_%d_inline.txt", x, z)), "INLINE");
-                    writeChunkDump(pipeChunk, new File(dumpsDir, String.format("mismatch_%d_%d_pipeline.txt", x, z)), "PIPELINE");
+
+                    // Yield if this tick has taken longer than 40ms to avoid hitching
+                    if (batchCount >= 1 && (System.currentTimeMillis() - tickStart >= 40L)) {
+                        break;
+                    }
                 }
 
                 long now = System.currentTimeMillis();
-                if (now - lastLogTime >= 5000L) {
+                if (now - lastLogTime >= 5000L || currentIndex >= targets.size()) {
                     lastLogTime = now;
                     send(server, sender, TextFormatting.GRAY + String.format(
                             "[WorldFlow DiffArea] Progress: %d/%d (%.1f%%) | Biomes: %d/%d | HM: %d/%d | Sections: %d/%d",
-                            checked, totalChunks, (checked * 100.0) / totalChunks,
+                            checked, targets.size(), (checked * 100.0) / targets.size(),
                             biomeMatches, checked, hmMatches, checked, secMatches, checked
                     ));
                 }
+
+                if (currentIndex < targets.size()) {
+                    if (server != null) {
+                        server.addScheduledTask(this);
+                    }
+                } else {
+                    finish();
+                }
+            } catch (Throwable t) {
+                WorldFlow.LOGGER.error("[WorldFlow] DiffArea execution encountered an error", t);
+                send(server, sender, TextFormatting.RED + "[WorldFlow DiffArea] Execution failed: " + t.getMessage());
+                DIFFING.set(false);
             }
         }
 
-        long elapsedSec = Math.max(1, (System.currentTimeMillis() - startTime) / 1000);
-        double bPct = checked > 0 ? (biomeMatches * 100.0) / checked : 0.0;
-        double hmPct = checked > 0 ? (hmMatches * 100.0) / checked : 0.0;
-        double sPct = checked > 0 ? (secMatches * 100.0) / checked : 0.0;
+        private void finish() {
+            try {
+                long elapsedSec = Math.max(1, (System.currentTimeMillis() - startTime) / 1000);
+                double bPct = checked > 0 ? (biomeMatches * 100.0) / checked : 0.0;
+                double hmPct = checked > 0 ? (hmMatches * 100.0) / checked : 0.0;
+                double sPct = checked > 0 ? (secMatches * 100.0) / checked : 0.0;
 
-        send(server, sender, TextFormatting.GOLD + "=== WorldFlow DiffArea Results ===");
-        send(server, sender, TextFormatting.YELLOW + String.format(
-                "Checked %d chunks in %ds (radius: %d, sampleEveryN: %d)",
-                checked, elapsedSec, radius, step
-        ));
-        send(server, sender, (biomeDiffs == 0 ? TextFormatting.GREEN : TextFormatting.RED) + String.format(
-                "Biomes:    %d MATCH (%.1f%%) / %d DIFF",
-                biomeMatches, bPct, biomeDiffs
-        ));
-        send(server, sender, (hmDiffs == 0 ? TextFormatting.GREEN : TextFormatting.RED) + String.format(
-                "HeightMap: %d MATCH (%.1f%%) / %d DIFF",
-                hmMatches, hmPct, hmDiffs
-        ));
-        send(server, sender, (secDiffs == 0 ? TextFormatting.GREEN : TextFormatting.RED) + String.format(
-                "Sections:  %d MATCH (%.1f%%) / %d DIFF",
-                secMatches, sPct, secDiffs
-        ));
+                send(server, sender, TextFormatting.GOLD + "=== WorldFlow DiffArea Results ===");
+                send(server, sender, TextFormatting.YELLOW + String.format(
+                        "Checked %d chunks in %ds (radius: %d, sampleEveryN: %d)",
+                        checked, elapsedSec, radius, step
+                ));
+                send(server, sender, (biomeDiffs == 0 ? TextFormatting.GREEN : TextFormatting.RED) + String.format(
+                        "Biomes:    %d MATCH (%.1f%%) / %d DIFF",
+                        biomeMatches, bPct, biomeDiffs
+                ));
+                send(server, sender, (hmDiffs == 0 ? TextFormatting.GREEN : TextFormatting.RED) + String.format(
+                        "HeightMap: %d MATCH (%.1f%%) / %d DIFF",
+                        hmMatches, hmPct, hmDiffs
+                ));
+                send(server, sender, (secDiffs == 0 ? TextFormatting.GREEN : TextFormatting.RED) + String.format(
+                        "Sections:  %d MATCH (%.1f%%) / %d DIFF",
+                        secMatches, sPct, secDiffs
+                ));
 
-        if (biomeDiffs == 0 && hmDiffs == 0 && secDiffs == 0) {
-            send(server, sender, TextFormatting.GREEN + "[WorldFlow DiffArea] SUCCESS: All " + checked + " sampled chunks are bit-identical between inline and pipeline!");
-        } else {
-            send(server, sender, TextFormatting.RED + "[WorldFlow DiffArea] Found mismatches! First mismatching chunks:");
-            for (String sample : mismatchSamples) {
-                send(server, sender, TextFormatting.RED + "  - " + sample);
+                if (biomeDiffs == 0 && hmDiffs == 0 && secDiffs == 0) {
+                    send(server, sender, TextFormatting.GREEN + "[WorldFlow DiffArea] SUCCESS: All " + checked + " sampled chunks are bit-identical between inline and pipeline!");
+                } else {
+                    send(server, sender, TextFormatting.RED + "[WorldFlow DiffArea] Found mismatches! First mismatching chunks:");
+                    for (String sample : mismatchSamples) {
+                        send(server, sender, TextFormatting.RED + "  - " + sample);
+                    }
+                }
+            } finally {
+                DIFFING.set(false);
             }
         }
     }
 
     private static void send(net.minecraft.server.MinecraftServer server, ICommandSender sender, String message) {
         WorldFlow.LOGGER.info(TextFormatting.getTextWithoutFormattingCodes(message));
-        if (server != null) {
+        if (server != null && !server.isCallingFromMinecraftThread()) {
             server.addScheduledTask(() -> sender.sendMessage(new TextComponentString(message)));
         } else {
             sender.sendMessage(new TextComponentString(message));

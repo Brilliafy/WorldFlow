@@ -163,4 +163,30 @@ public abstract class WorldMixin {
             cir.setReturnValue(false);
         }
     }
+
+    @Inject(method = "updateBlockTick(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/Block;II)V",
+            at = @At("HEAD"),
+            cancellable = true)
+    private void worldflow$onUpdateBlockTick(BlockPos pos, net.minecraft.block.Block blockIn, int delay, int priority, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            if ((Object) this instanceof WorldServer) {
+                CascadeBlockBuffer.INSTANCE.stageTickUpdate((WorldServer) (Object) this, pos, blockIn, delay, priority);
+            }
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "markAndNotifyBlock", at = @At("HEAD"), cancellable = true, remap = false)
+    private void worldflow$onMarkAndNotifyBlock(BlockPos pos, Chunk chunk, IBlockState iblockstate, IBlockState newState, int flags, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "notifyNeighborsOfStateChange", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onNotifyNeighbors(BlockPos pos, net.minecraft.block.Block blockType, boolean updateObservers, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            ci.cancel();
+        }
+    }
 }

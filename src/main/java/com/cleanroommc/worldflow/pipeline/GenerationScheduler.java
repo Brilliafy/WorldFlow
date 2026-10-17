@@ -155,6 +155,7 @@ public class GenerationScheduler {
             ThreadLocalWorldView.exit();
             this.totalBaseGenNanos.addAndGet(System.nanoTime() - startNanos);
             this.totalBaseGenCount.incrementAndGet();
+            this.parallelCount.incrementAndGet();
             checkLogMetrics();
         }
 
@@ -251,8 +252,9 @@ public class GenerationScheduler {
             }
 
             // 2. Standard population (ores, flora, structures)
+            boolean isOtg = generator.getClass().getName().startsWith("com.pg85.otg.");
             GeneratorSafetyLevel genSafety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
-            if (genSafety == GeneratorSafetyLevel.SERIALIZE) {
+            if (isOtg || genSafety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
                 OTGParallelContext.OTG_STRUCTURE_LOCK.lock();
                 try {
@@ -261,6 +263,7 @@ public class GenerationScheduler {
                     OTGParallelContext.OTG_STRUCTURE_LOCK.unlock();
                 }
             } else {
+                this.parallelCount.incrementAndGet();
                 generator.populate(pos.x, pos.z);
             }
 

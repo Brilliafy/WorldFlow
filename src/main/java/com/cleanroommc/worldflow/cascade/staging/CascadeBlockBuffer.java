@@ -16,13 +16,38 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import net.minecraft.block.Block;
+
 public class CascadeBlockBuffer {
     public static final CascadeBlockBuffer INSTANCE = new CascadeBlockBuffer();
 
+    public static class StagedTick {
+        public final BlockPos pos;
+        public final Block block;
+        public final int delay;
+        public final int priority;
+
+        public StagedTick(BlockPos pos, Block block, int delay, int priority) {
+            this.pos = pos;
+            this.block = block;
+            this.delay = delay;
+            this.priority = priority;
+        }
+    }
+
     private final Map<Integer, Map<ChunkPos, List<StagedBlock>>> memoryStaging = new ConcurrentHashMap<>();
+    private final Map<Integer, Map<ChunkPos, List<StagedTick>>> stagedTicks = new ConcurrentHashMap<>();
     public final AtomicLong totalCascadesPrevented = new AtomicLong(0);
     public final AtomicLong totalBlocksStaged = new AtomicLong(0);
     public final AtomicLong totalBlocksFlushed = new AtomicLong(0);
+
+    public void stageTickUpdate(WorldServer world, BlockPos pos, Block block, int delay, int priority) {
+        int dim = world.provider.getDimension();
+        ChunkPos cp = new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4);
+        Map<ChunkPos, List<StagedTick>> dimMap = this.stagedTicks.computeIfAbsent(dim, d -> new ConcurrentHashMap<>());
+        List<StagedTick> list = dimMap.computeIfAbsent(cp, c -> Collections.synchronizedList(new ArrayList<>()));
+        list.add(new StagedTick(pos, block, delay, priority));
+    }
 
     public void stageBlock(World world, BlockPos pos, IBlockState state, @Nullable NBTTagCompound teNbt, String sourceName) {
         int dim = world.provider.getDimension();
@@ -111,6 +136,17 @@ public class CascadeBlockBuffer {
             world.captureBlockSnapshots = oldCapture;
         }
 
+        // Flush staged ticks for this chunk
+        Map<ChunkPos, List<StagedTick>> tickDimMap = this.stagedTicks.get(dim);
+        if (tickDimMap != null) {
+            List<StagedTick> ticks = tickDimMap.remove(chunkPos);
+            if (ticks != null && !ticks.isEmpty()) {
+                for (StagedTick t : ticks) {
+                    world.scheduleBlockUpdate(t.pos, t.block, t.delay, t.priority);
+                }
+            }
+        }
+
         chunk.markDirty();
         return count;
     }
@@ -133,7 +169,8 @@ public class CascadeBlockBuffer {
     }
 
     public void clear() {
-        memoryStaging.clear();
+        this.memoryStaging.clear();
+        this.stagedTicks.clear();
     }
 
     public int getCurrentlyStagedCount() {

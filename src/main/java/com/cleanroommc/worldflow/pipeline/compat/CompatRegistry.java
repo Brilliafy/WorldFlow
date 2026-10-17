@@ -31,9 +31,9 @@ public class CompatRegistry {
 
         // Serialize: multi-chunk complex structures with global cache or shared RNG state.
         // NOTE ON OTG/DREGORA: Base terrain (ChunkProviderOTG / ForgeChunkBuffer) runs FULLY PARALLEL via
-        // OTGChunkGeneratorMixin & OTGParallelContext. However, OTG custom structure generation
-        // (CustomStructureCache, CustomStructurePlotter.spawnedStructures, ObjectSpawner, BO3/BO4 data)
-        // mutates shared multi-chunk caches and is strictly SERIALIZED here during feature population.
+        // OTGChunkGeneratorMixin & OTGParallelContext. Therefore OTGChunkGenerator is PARALLEL_SAFE.
+        // OTG custom structure generation (BO3/BO4, ObjectSpawner) is locked specifically during feature population via OTG_STRUCTURE_LOCK.
+        registerClass("com.pg85.otg.forge.generator.OTGChunkGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
         registerPackage("com.pg85.otg.", GeneratorSafetyLevel.SERIALIZE);
         registerPackage("ivorius.reccomplex.", GeneratorSafetyLevel.SERIALIZE);
         registerPackage("battletowers.", GeneratorSafetyLevel.SERIALIZE);

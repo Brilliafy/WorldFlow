@@ -142,9 +142,10 @@ public class BenchmarkRunner {
                         avgBaseMs, avgFeatMs
                 ));
 
-                // Run verification sample (sample every 4 chunks across area)
-                send(server, sender, TextFormatting.DARK_GREEN + "[WorldFlow Bench] Running verification sample (sampleEveryN=4)...");
-                ChunkDumper.runDiffAreaInternal(server, world, centerX, centerZ, radius, 4, sender);
+                send(server, sender, TextFormatting.GREEN + String.format(
+                        "[WorldFlow Bench] Benchmark complete! Run '/worldflow diffarea %d 4' to verify chunk bit-equivalence.",
+                        radius
+                ));
 
             } catch (Throwable t) {
                 WorldFlow.LOGGER.error("[WorldFlow] Benchmark execution failed", t);
