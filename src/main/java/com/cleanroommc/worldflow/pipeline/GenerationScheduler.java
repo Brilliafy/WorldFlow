@@ -36,6 +36,11 @@ public class GenerationScheduler {
 
     private final Map<Long, StatusHolder> inFlight = new ConcurrentHashMap<>();
     public final AtomicLong totalGenerationsRequested = new AtomicLong(0);
+    private final long pipelineStartTimeMs = System.currentTimeMillis();
+    private final AtomicLong totalBaseGenNanos = new AtomicLong(0);
+    private final AtomicLong totalBaseGenCount = new AtomicLong(0);
+    private final AtomicLong totalFeaturesNanos = new AtomicLong(0);
+    private final AtomicLong totalFeaturesCount = new AtomicLong(0);
 
     public static GenerationScheduler getInstance() {
         return INSTANCE;
@@ -123,6 +128,7 @@ public class GenerationScheduler {
         ChunkPos pos = holder.getPos();
         ProtoChunk proto = holder.getProtoChunk();
 
+        long startNanos = System.nanoTime();
         ThreadLocalWorldView.enter(world, pos, proto, "BaseGen");
         try {
             IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
@@ -133,9 +139,13 @@ public class GenerationScheduler {
             }
             holder.setCurrentStatus(ChunkStatus.CARVERS);
         } catch (Throwable t) {
-            WorldFlow.LOGGER.error("[WorldFlow] Error generating base terrain for chunk [{}, {}]", pos.x, pos.z, t);
+            WorldFlow.LOGGER.warn("[WorldFlow] Off-thread error in base terrain generation for chunk [{}, {}], falling back to main-thread serial", pos.x, pos.z, t);
+            fallbackToMainThreadSerial(holder);
+            return;
         } finally {
             ThreadLocalWorldView.exit();
+            this.totalBaseGenNanos.addAndGet(System.nanoTime() - startNanos);
+            this.totalBaseGenCount.incrementAndGet();
         }
 
         // If target was only CARVERS (e.g. neighbour dependency), complete future now
@@ -208,6 +218,7 @@ public class GenerationScheduler {
         ChunkPos pos = holder.getPos();
         ProtoChunk proto = holder.getProtoChunk();
 
+        long startNanos = System.nanoTime();
         ThreadLocalWorldView.enter(world, pos, proto, "Features");
         ThreadLocalWorldView.attachNeighbourhood(neighbourhood);
         try {
@@ -215,9 +226,11 @@ public class GenerationScheduler {
             IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
             Random workerRand = WorkerGeneratorContext.get().rand;
 
-            // 1. PopulateChunkEvent.Pre (Synchronized on EVENT_BUS to protect mod listeners from off-thread race conditions)
-            synchronized (MinecraftForge.EVENT_BUS) {
+            // 1. PopulateChunkEvent.Pre (Unsynchronized to prevent bus deadlocks; wrapped safely)
+            try {
                 MinecraftForge.EVENT_BUS.post(new PopulateChunkEvent.Pre(generator, world, workerRand, pos.x, pos.z, false));
+            } catch (Throwable t) {
+                WorldFlow.LOGGER.debug("[WorldFlow] Exception in PopulateChunkEvent.Pre listener", t);
             }
 
             // 2. Standard population (ores, flora, structures)
@@ -226,21 +239,58 @@ public class GenerationScheduler {
             // 3. Forge GameRegistry world generators (thread-safe and serialized per-generator)
             generateModWorldIsolated(pos.x, pos.z, world, generator, provider, workerRand);
 
-            // 4. PopulateChunkEvent.Post
-            synchronized (MinecraftForge.EVENT_BUS) {
-                MinecraftForge.EVENT_BUS.post(new PopulateChunkEvent.Post(generator, world, workerRand, pos.x, pos.z, false));
-            }
+            // Note: PopulateChunkEvent.Post is redispatched on the server tick thread in PublishManager!
 
             proto.setTerrainPopulated(true);
             holder.setCurrentStatus(ChunkStatus.LIGHT);
         } catch (Throwable t) {
-            WorldFlow.LOGGER.error("[WorldFlow] Error decorating chunk [{}, {}]", pos.x, pos.z, t);
+            WorldFlow.LOGGER.warn("[WorldFlow] Off-thread error decorating chunk [{}, {}], falling back to main-thread finalize", pos.x, pos.z, t);
+            fallbackToMainThreadSerial(holder);
+            return;
         } finally {
             ThreadLocalWorldView.exit();
+            this.totalFeaturesNanos.addAndGet(System.nanoTime() - startNanos);
+            this.totalFeaturesCount.incrementAndGet();
         }
 
         // Ready for publish to main thread
         PublishManager.INSTANCE.enqueueReady(holder);
+    }
+
+    private void fallbackToMainThreadSerial(StatusHolder holder) {
+        WorldServer world = holder.getWorld();
+        ChunkPos pos = holder.getPos();
+        world.addScheduledTask(() -> {
+            try {
+                // If already published/loaded, complete future and clean up
+                Chunk loaded = world.getChunkProvider().getLoadedChunk(pos.x, pos.z);
+                if (loaded != null) {
+                    holder.setCurrentStatus(ChunkStatus.FULL);
+                    holder.getFuture().complete(loaded);
+                    removeInFlight(holder.getChunkKey());
+                    return;
+                }
+                // Complete generation serially on the main server thread
+                Chunk chunk = holder.getProtoChunk().getChunk();
+                if (chunk == null || !holder.getCurrentStatus().isAtLeast(ChunkStatus.CARVERS)) {
+                    chunk = world.getChunkProvider().chunkGenerator.generateChunk(pos.x, pos.z);
+                    if (chunk == null) {
+                        chunk = new Chunk(world, pos.x, pos.z);
+                    }
+                    holder.getProtoChunk().setUnderlyingChunk(chunk);
+                }
+                holder.getProtoChunk().setTerrainPopulated(true);
+                PublishManager.INSTANCE.publishChunk(world, holder);
+            } catch (Throwable fallbackErr) {
+                WorldFlow.LOGGER.error("[WorldFlow] Main-thread serial fallback failed for chunk [{}, {}]", pos.x, pos.z, fallbackErr);
+                Chunk fallbackChunk = holder.getProtoChunk().getChunk();
+                if (fallbackChunk == null) {
+                    fallbackChunk = new Chunk(world, pos.x, pos.z);
+                }
+                holder.getFuture().complete(fallbackChunk);
+                removeInFlight(holder.getChunkKey());
+            }
+        });
     }
 
     private static volatile List<IWorldGenerator> cachedSortedGenerators;
@@ -304,13 +354,29 @@ public class GenerationScheduler {
         long now = System.currentTimeMillis();
         long last = this.lastMetricsLog.get();
         if (now - last > 30000L && this.lastMetricsLog.compareAndSet(last, now)) {
-            WorldFlow.LOGGER.info("[WorldFlow Metrics] In-Flight: {} | Parallel Gens: {} | Serialized Gens: {} | Published: {} | Active Workers: {}",
+            long totalPublished = PublishManager.INSTANCE.totalChunksPublished.get();
+            double elapsedSec = Math.max(1.0, (now - this.pipelineStartTimeMs) / 1000.0);
+            double chunksPerSec = totalPublished / elapsedSec;
+            double chunksPerMin = chunksPerSec * 60.0;
+
+            long baseCount = this.totalBaseGenCount.get();
+            double avgBaseMs = baseCount > 0 ? (this.totalBaseGenNanos.get() / 1_000_000.0) / baseCount : 0.0;
+
+            long featCount = this.totalFeaturesCount.get();
+            double avgFeatMs = featCount > 0 ? (this.totalFeaturesNanos.get() / 1_000_000.0) / featCount : 0.0;
+
+            WorldFlow.LOGGER.info(String.format(
+                    "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | In-Flight: %d | Parallel: %d | Serialized: %d | Active Workers: %d",
+                    chunksPerSec,
+                    chunksPerMin,
+                    totalPublished,
+                    avgBaseMs,
+                    avgFeatMs,
                     this.inFlight.size(),
                     this.parallelCount.get(),
                     this.serializedCount.get(),
-                    PublishManager.INSTANCE.totalChunksPublished.get(),
                     GenerationWorkerPool.getInstance().getActiveWorkerCount()
-            );
+            ));
         }
     }
 

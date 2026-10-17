@@ -22,15 +22,21 @@ public class StatusHolder implements Comparable<StatusHolder> {
     private volatile ChunkStatus targetStatus;
     private final AtomicInteger priorityScore = new AtomicInteger(0);
     private final long submissionTimeNanos;
+    private final GenerationPriority initialPriority;
+    private volatile boolean skipGhostCleanup = false;
 
     public StatusHolder(WorldServer world, int x, int z, ChunkStatus targetStatus, GenerationPriority priority) {
         this.world = world;
         this.pos = new ChunkPos(x, z);
         this.chunkKey = ChunkPos.asLong(x, z);
         this.targetStatus = targetStatus;
+        this.initialPriority = priority != null ? priority : GenerationPriority.BACKGROUND;
         this.protoChunk = new ProtoChunk(world, x, z);
         this.submissionTimeNanos = System.nanoTime();
-        this.priorityScore.set(priority.getWeight() * 10000);
+        this.priorityScore.set(this.initialPriority.getWeight() * 10000);
+        if (this.initialPriority == GenerationPriority.IMMEDIATE || this.initialPriority == GenerationPriority.PREGENERATOR) {
+            this.skipGhostCleanup = true;
+        }
     }
 
     public WorldServer getWorld() {
@@ -51,6 +57,22 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     public CompletableFuture<Chunk> getFuture() {
         return this.future;
+    }
+
+    public GenerationPriority getInitialPriority() {
+        return this.initialPriority;
+    }
+
+    public boolean isSkipGhostCleanup() {
+        return this.skipGhostCleanup;
+    }
+
+    public void setSkipGhostCleanup(boolean skip) {
+        this.skipGhostCleanup = skip;
+    }
+
+    public boolean isPlayerRequested() {
+        return this.initialPriority == GenerationPriority.PLAYER;
     }
 
     public ChunkStatus getCurrentStatus() {

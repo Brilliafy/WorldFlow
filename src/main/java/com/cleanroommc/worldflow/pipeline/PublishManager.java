@@ -105,7 +105,12 @@ public class PublishManager {
             WorldFlow.LOGGER.debug("[WorldFlow] Light check exception on chunk [{}, {}]", cx, cz, t);
         }
 
-        // 5. Fire Forge ChunkEvent.Load on the server tick thread
+        // 5. Fire Forge events on the server tick thread
+        try {
+            MinecraftForge.EVENT_BUS.post(new net.minecraftforge.event.terraingen.PopulateChunkEvent.Post(world.getChunkProvider().chunkGenerator, world, world.rand, cx, cz, false));
+        } catch (Throwable t) {
+            WorldFlow.LOGGER.debug("[WorldFlow] Handled exception in PopulateChunkEvent.Post", t);
+        }
         MinecraftForge.EVENT_BUS.post(new ChunkEvent.Load(chunk));
 
         // 6. Update PlayerChunkMapEntry and send packet to waiting players
@@ -117,8 +122,9 @@ public class PublishManager {
             if (entry.getChunk() != null) {
                 entry.sendToPlayers();
             }
-        } else {
-            // Player teleported away / quit: queue chunk for unload so it does not leak as a ghost chunk
+        } else if (holder.isPlayerRequested() && !holder.isSkipGhostCleanup()) {
+            // Player disconnected or teleported away while chunk was generating:
+            // Queue for unload only if it was originally player-requested and does not have a persistent Forge ticket
             boolean hasForgeTicket = net.minecraftforge.common.ForgeChunkManager.getPersistentChunksFor(world).containsKey(holder.getPos());
             if (!hasForgeTicket) {
                 world.getChunkProvider().queueUnload(chunk);

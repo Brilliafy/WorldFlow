@@ -1,5 +1,6 @@
 package com.cleanroommc.worldflow.mixin;
 
+import com.cleanroommc.worldflow.config.ModConfig;
 import com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView;
 import net.minecraft.block.BlockFalling;
 import org.spongepowered.asm.mixin.Mixin;
@@ -14,6 +15,7 @@ public abstract class BlockFallingMixin {
             at = @At(value = "FIELD", target = "Lnet/minecraft/block/BlockFalling;fallInstantly:Z")
     )
     private boolean worldflow$forceInstantFallingDuringGen() {
-        return BlockFalling.fallInstantly || ThreadLocalWorldView.isGenerating();
+        boolean forceInstant = ModConfig.CONCURRENCY == null || ModConfig.CONCURRENCY.forceInstantFallingDuringGen;
+        return BlockFalling.fallInstantly || (forceInstant && ThreadLocalWorldView.isGenerating());
     }
 }

@@ -11,8 +11,12 @@ import net.minecraft.world.biome.Biome;
 import net.minecraft.world.biome.BiomeProvider;
 import net.minecraft.world.chunk.Chunk;
 
+import com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer;
+
 import javax.annotation.Nullable;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * An off-world chunk container that represents a chunk progressing through
@@ -70,18 +74,19 @@ public class ProtoChunk {
         return this.status.get().isAtLeast(required);
     }
 
-    private final Object chunkLock = new Object();
+    private final ReentrantLock chunkLock = new ReentrantLock();
 
     public Chunk getChunk() {
-        synchronized (this.chunkLock) {
-            return this.underlyingChunk;
-        }
+        return this.underlyingChunk;
     }
 
     public void setUnderlyingChunk(Chunk chunk) {
         if (chunk != null) {
-            synchronized (this.chunkLock) {
+            this.chunkLock.lock();
+            try {
                 this.underlyingChunk = chunk;
+            } finally {
+                this.chunkLock.unlock();
             }
         }
     }
@@ -90,12 +95,26 @@ public class ProtoChunk {
         if (pos.getY() < 0 || pos.getY() >= 256) {
             return Blocks.AIR.getDefaultState();
         }
-        synchronized (this.chunkLock) {
-            Chunk chunk = this.underlyingChunk;
-            if (chunk == null) {
-                return Blocks.AIR.getDefaultState();
+        boolean acquired = false;
+        try {
+            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (acquired) {
+            try {
+                Chunk chunk = this.underlyingChunk;
+                if (chunk == null) {
+                    return Blocks.AIR.getDefaultState();
+                }
+                return chunk.getBlockState(pos);
+            } finally {
+                this.chunkLock.unlock();
             }
-            return chunk.getBlockState(pos);
+        } else {
+            // Contention fallback: read directly from volatile underlyingChunk without deadlock
+            Chunk chunk = this.underlyingChunk;
+            return chunk != null ? chunk.getBlockState(pos) : Blocks.AIR.getDefaultState();
         }
     }
 
@@ -103,63 +122,141 @@ public class ProtoChunk {
         if (pos.getY() < 0 || pos.getY() >= 256 || state == null) {
             return false;
         }
-        synchronized (this.chunkLock) {
-            Chunk chunk = this.underlyingChunk;
-            if (chunk == null) {
-                return false;
+        boolean acquired = false;
+        try {
+            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (acquired) {
+            try {
+                Chunk chunk = this.underlyingChunk;
+                if (chunk == null) {
+                    return false;
+                }
+                return chunk.setBlockState(pos, state) != null;
+            } finally {
+                this.chunkLock.unlock();
             }
-            return chunk.setBlockState(pos, state) != null;
+        } else {
+            // Deadlock prevention (e.g. cross-chunk cycle between adjacent workers):
+            // Fall back to staging in CascadeBlockBuffer to be flushed deterministically at publish time
+            CascadeBlockBuffer.INSTANCE.stageBlock(this.world, pos, state, null, "ContendedCrossChunkLock");
+            return true;
         }
     }
 
     public Biome getBiome(BlockPos pos, BiomeProvider provider) {
-        synchronized (this.chunkLock) {
-            Chunk chunk = this.underlyingChunk;
-            if (chunk != null) {
-                return chunk.getBiome(pos, provider);
+        boolean acquired = false;
+        try {
+            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (acquired) {
+            try {
+                Chunk chunk = this.underlyingChunk;
+                if (chunk != null) {
+                    return chunk.getBiome(pos, provider);
+                }
+                return provider.getBiome(pos);
+            } finally {
+                this.chunkLock.unlock();
             }
-            return provider.getBiome(pos);
+        } else {
+            Chunk chunk = this.underlyingChunk;
+            return chunk != null ? chunk.getBiome(pos, provider) : provider.getBiome(pos);
         }
     }
 
     public int getHeight(BlockPos pos) {
-        synchronized (this.chunkLock) {
-            Chunk chunk = this.underlyingChunk;
-            if (chunk != null) {
-                return chunk.getHeight(pos);
+        boolean acquired = false;
+        try {
+            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (acquired) {
+            try {
+                Chunk chunk = this.underlyingChunk;
+                if (chunk != null) {
+                    return chunk.getHeight(pos);
+                }
+                return 64;
+            } finally {
+                this.chunkLock.unlock();
             }
-            return 64;
+        } else {
+            Chunk chunk = this.underlyingChunk;
+            return chunk != null ? chunk.getHeight(pos) : 64;
         }
     }
 
     @Nullable
     public TileEntity getTileEntity(BlockPos pos) {
-        synchronized (this.chunkLock) {
-            Chunk chunk = this.underlyingChunk;
-            if (chunk != null) {
-                return chunk.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+        boolean acquired = false;
+        try {
+            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (acquired) {
+            try {
+                Chunk chunk = this.underlyingChunk;
+                if (chunk != null) {
+                    return chunk.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+                }
+                return null;
+            } finally {
+                this.chunkLock.unlock();
             }
-            return null;
+        } else {
+            Chunk chunk = this.underlyingChunk;
+            return chunk != null ? chunk.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK) : null;
         }
     }
 
     public void addTileEntity(BlockPos pos, TileEntity tileEntity) {
         if (tileEntity != null) {
-            synchronized (this.chunkLock) {
-                Chunk chunk = this.underlyingChunk;
-                if (chunk != null) {
-                    chunk.addTileEntity(pos, tileEntity);
+            boolean acquired = false;
+            try {
+                acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (acquired) {
+                try {
+                    Chunk chunk = this.underlyingChunk;
+                    if (chunk != null) {
+                        chunk.addTileEntity(pos, tileEntity);
+                    }
+                } finally {
+                    this.chunkLock.unlock();
                 }
+            } else {
+                net.minecraft.nbt.NBTTagCompound nbt = new net.minecraft.nbt.NBTTagCompound();
+                tileEntity.writeToNBT(nbt);
+                CascadeBlockBuffer.INSTANCE.stageBlock(this.world, pos, this.world.getBlockState(pos), nbt, "ContendedTileEntityLock");
             }
         }
     }
 
     public void addEntity(Entity entity) {
         if (entity != null) {
-            synchronized (this.chunkLock) {
-                Chunk chunk = this.underlyingChunk;
-                if (chunk != null) {
-                    chunk.addEntity(entity);
+            boolean acquired = false;
+            try {
+                acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (acquired) {
+                try {
+                    Chunk chunk = this.underlyingChunk;
+                    if (chunk != null) {
+                        chunk.addEntity(entity);
+                    }
+                } finally {
+                    this.chunkLock.unlock();
                 }
             }
         }

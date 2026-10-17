@@ -37,9 +37,13 @@ public class ModConfig {
         public int parallelWorkerThreads = 0;
 
         @Config.Comment("Maximum concurrent chunks in-flight across all generation pipeline stages.")
-        @Config.RangeInt(min = 16, max = 512)
+        @Config.RangeInt(min = 8, max = 512)
         @Config.Name("Max In-Flight Generations")
-        public int maxInFlightGenerations = 64;
+        public int maxInFlightGenerations = 32;
+
+        @Config.Comment("Force falling blocks (sand, gravel) to fall instantly during off-thread generation instead of spawning EntityFallingBlock.")
+        @Config.Name("Force Instant Falling During Generation")
+        public boolean forceInstantFallingDuringGen = true;
 
         @Config.Comment("Enable thread-local generation-world isolation barrier.")
         @Config.Name("Enable ThreadLocal Isolation")
