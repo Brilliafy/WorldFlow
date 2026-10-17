@@ -37,11 +37,15 @@ public class WorldFlow {
     public void init(FMLInitializationEvent event) {
         MinecraftForge.EVENT_BUS.register(new PregeneratorEngine());
         MinecraftForge.EVENT_BUS.register(ChunkEventHandler.class);
-        com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().init();
+        if (com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY != null && com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY.enableParallelGeneration) {
+            com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().init();
+            LOGGER.info("[WorldFlow] True parallel staged generation pipeline ACTIVE ({} worker threads).",
+                    com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.effectiveThreads());
+        } else {
+            LOGGER.info("[WorldFlow] True parallel staged generation pipeline DISABLED (vanilla inline synchronous chunk generation).");
+        }
         LOGGER.info("[WorldFlow] Vectorized SIMD-friendly noise calculation engine initialized.");
         LOGGER.info("[WorldFlow] Gentle pre-generator initialised.");
-        LOGGER.info("[WorldFlow] True parallel staged generation pipeline active ({} worker threads).",
-                com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.effectiveThreads());
     }
 
     @Mod.EventHandler

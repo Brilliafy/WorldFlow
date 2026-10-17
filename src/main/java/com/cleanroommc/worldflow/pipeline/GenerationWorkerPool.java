@@ -3,6 +3,7 @@ package com.cleanroommc.worldflow.pipeline;
 import com.cleanroommc.worldflow.WorldFlow;
 import com.cleanroommc.worldflow.config.ModConfig;
 
+import java.util.Comparator;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -19,6 +20,40 @@ public class GenerationWorkerPool {
     private ExecutorService genLeverExecutor;
     private boolean initialized = false;
 
+    public static class PrioritizedTask implements Runnable, Comparable<PrioritizedTask> {
+        private final Runnable task;
+        private final int priority;
+        private final long submissionTimeNanos;
+
+        public PrioritizedTask(Runnable task, int priority) {
+            this.task = task;
+            this.priority = priority;
+            this.submissionTimeNanos = System.nanoTime();
+        }
+
+        public int getPriority() {
+            return this.priority;
+        }
+
+        public long getSubmissionTimeNanos() {
+            return this.submissionTimeNanos;
+        }
+
+        @Override
+        public void run() {
+            this.task.run();
+        }
+
+        @Override
+        public int compareTo(PrioritizedTask o) {
+            int cmp = Integer.compare(o.priority, this.priority);
+            if (cmp != 0) {
+                return cmp;
+            }
+            return Long.compare(this.submissionTimeNanos, o.submissionTimeNanos);
+        }
+    }
+
     public static GenerationWorkerPool getInstance() {
         return INSTANCE;
     }
@@ -31,11 +66,23 @@ public class GenerationWorkerPool {
         int targetThreads = effectiveThreads();
         AtomicInteger workerThreadId = new AtomicInteger(1);
 
+        Comparator<Runnable> taskComparator = (r1, r2) -> {
+            int p1 = (r1 instanceof PrioritizedTask) ? ((PrioritizedTask) r1).getPriority() : 0;
+            int p2 = (r2 instanceof PrioritizedTask) ? ((PrioritizedTask) r2).getPriority() : 0;
+            int cmp = Integer.compare(p2, p1);
+            if (cmp != 0) {
+                return cmp;
+            }
+            long t1 = (r1 instanceof PrioritizedTask) ? ((PrioritizedTask) r1).getSubmissionTimeNanos() : 0L;
+            long t2 = (r2 instanceof PrioritizedTask) ? ((PrioritizedTask) r2).getSubmissionTimeNanos() : 0L;
+            return Long.compare(t1, t2);
+        };
+
         this.workerPool = new ThreadPoolExecutor(
                 targetThreads,
                 targetThreads,
                 60L, TimeUnit.SECONDS,
-                new PriorityBlockingQueue<>(1024),
+                new PriorityBlockingQueue<>(1024, taskComparator),
                 r -> {
                     Thread t = new Thread(r, "WorldFlow-GenWorker-" + workerThreadId.getAndIncrement());
                     t.setDaemon(true);
@@ -70,17 +117,27 @@ public class GenerationWorkerPool {
     }
 
     public void executeWorker(Runnable command) {
+        executeWorker(command, 0);
+    }
+
+    public void executeWorker(Runnable command, int priority) {
         if (!this.initialized) {
             init();
         }
-        this.workerPool.execute(command);
+        Runnable r = (command instanceof PrioritizedTask) ? command : new PrioritizedTask(command, priority);
+        this.workerPool.execute(r);
+    }
+
+    public void executeWorker(StatusHolder holder, Runnable command) {
+        int priority = holder != null ? holder.getPriorityScore() : 0;
+        executeWorker(command, priority);
     }
 
     public Future<?> submitWorker(Runnable task) {
         if (!this.initialized) {
             init();
         }
-        return this.workerPool.submit(task);
+        return this.workerPool.submit(new PrioritizedTask(task, 0));
     }
 
     public <T> Future<T> submitWorker(Callable<T> task) {

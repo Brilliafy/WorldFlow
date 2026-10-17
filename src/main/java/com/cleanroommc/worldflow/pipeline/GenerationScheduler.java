@@ -72,7 +72,13 @@ public class GenerationScheduler {
             }
         }
 
-        // 3. Already tracked in pipeline?
+        // 3. Synchronous / Immediate priority caller: bypass staged pipeline and take vanilla inline path!
+        if (priority == GenerationPriority.IMMEDIATE) {
+            Chunk chunk = world.getChunkProvider().provideChunk(x, z);
+            return CompletableFuture.completedFuture(chunk);
+        }
+
+        // 4. Already tracked in pipeline?
         StatusHolder existing = this.inFlight.get(key);
         if (existing != null) {
             existing.bumpPriority(priority);
@@ -80,7 +86,7 @@ public class GenerationScheduler {
             return existing.getFuture();
         }
 
-        // 4. In-flight backpressure / memory guard: Cap maximum concurrent in-flight generations
+        // 5. In-flight backpressure / memory guard: Cap maximum concurrent in-flight generations
         int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 64;
         if (this.inFlight.size() >= maxInFlight) {
             long waitStart = System.currentTimeMillis();
@@ -91,7 +97,7 @@ public class GenerationScheduler {
             }
         }
 
-        // 5. Register new StatusHolder
+        // 6. Register new StatusHolder
         StatusHolder holder = new StatusHolder(world, x, z, targetStatus, priority);
         StatusHolder prev = this.inFlight.putIfAbsent(key, holder);
         if (prev != null) {
@@ -100,7 +106,7 @@ public class GenerationScheduler {
             return prev.getFuture();
         }
 
-        // 6. Begin staged pipeline execution
+        // 7. Begin staged pipeline execution
         advanceChunk(holder);
         return holder.getFuture();
     }
@@ -114,7 +120,7 @@ public class GenerationScheduler {
 
         if (current == ChunkStatus.EMPTY) {
             // Stage 0 -> CARVERS: generate base terrain (noise, surface, carvers)
-            GenerationWorkerPool.getInstance().executeWorker(() -> executeBaseGeneration(holder));
+            GenerationWorkerPool.getInstance().executeWorker(holder, () -> executeBaseGeneration(holder));
         } else if (current == ChunkStatus.CARVERS) {
             // Stage CARVERS -> FEATURES: requires 3x3 neighbours at least at CARVERS
             checkAndScheduleFeatures(holder);
@@ -201,7 +207,7 @@ public class GenerationScheduler {
             if (isSerialized) {
                 GenerationWorkerPool.getInstance().executeSerializer(() -> executeFeatures(holder, neighbourhood));
             } else {
-                GenerationWorkerPool.getInstance().executeWorker(() -> executeFeatures(holder, neighbourhood));
+                GenerationWorkerPool.getInstance().executeWorker(holder, () -> executeFeatures(holder, neighbourhood));
             }
         } else {
             // Wait for all missing neighbours to reach CARVERS, then schedule features
@@ -217,7 +223,7 @@ public class GenerationScheduler {
                             }
                         }
                         executeFeatures(holder, neighbourhood);
-                    }, isSerialized ? GenerationWorkerPool.getInstance()::executeSerializer : GenerationWorkerPool.getInstance()::executeWorker);
+                    }, isSerialized ? GenerationWorkerPool.getInstance()::executeSerializer : r -> GenerationWorkerPool.getInstance().executeWorker(holder, r));
         }
     }
 
@@ -407,24 +413,31 @@ public class GenerationScheduler {
             return loaded;
         }
 
-        // 2. Request chunk from pipeline with IMMEDIATE priority
-        CompletableFuture<Chunk> future = requestChunk(world, x, z, ChunkStatus.FULL, GenerationPriority.IMMEDIATE);
-
-        // 3. Wait up to timeout
-        try {
-            return future.get(timeoutMs, TimeUnit.MILLISECONDS);
-        } catch (Throwable ignored) {
+        // 2. DISK-EXISTENCE GUARD: Check if chunk is saved on disk — NEVER overwrite existing world data!
+        if (world.getChunkProvider().chunkLoader != null && world.getChunkProvider().chunkLoader.isChunkGeneratedAt(x, z)) {
+            Chunk diskChunk = world.getChunkProvider().loadChunk(x, z);
+            if (diskChunk != null) {
+                return diskChunk;
+            }
         }
 
-        // 4. If timed out, publish any completed proto or return null to allow Forge sync fallback
+        // 3. Check if chunk is already in flight in the parallel pipeline
         long key = ChunkPos.asLong(x, z);
         StatusHolder holder = this.inFlight.get(key);
-        if (holder != null && holder.getProtoChunk() != null) {
-            PublishManager.INSTANCE.publishChunk(world, holder);
-            return holder.getProtoChunk().getChunk();
+        if (holder != null) {
+            holder.bumpPriority(GenerationPriority.IMMEDIATE);
+            try {
+                return holder.getFuture().get(timeoutMs, TimeUnit.MILLISECONDS);
+            } catch (Throwable ignored) {
+            }
+            if (holder.getProtoChunk() != null && holder.getProtoChunk().getChunk() != null) {
+                PublishManager.INSTANCE.publishChunk(world, holder);
+                return holder.getProtoChunk().getChunk();
+            }
         }
 
-        return null;
+        // 4. Synchronous caller fallback: take vanilla inline path
+        return world.getChunkProvider().provideChunk(x, z);
     }
 
     @Nullable

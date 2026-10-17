@@ -59,19 +59,33 @@ public abstract class ChunkProviderServerMixin {
             }
         }
 
-        // 3. Check if chunk is completed in the parallel pipeline
+        // 3. Check if chunk is completed or in-flight in the parallel pipeline
         long key = ChunkPos.asLong(x, z);
         StatusHolder holder = GenerationScheduler.getInstance().getInFlight(key);
-        if (holder != null && holder.getProtoChunk() != null && holder.getProtoChunk().getChunk() != null) {
-            PublishManager.INSTANCE.publishChunk(this.world, holder);
-            cir.setReturnValue(holder.getProtoChunk().getChunk());
-            return;
+        if (holder != null) {
+            if (holder.getProtoChunk() != null && holder.getProtoChunk().getChunk() != null && holder.isDone()) {
+                PublishManager.INSTANCE.publishChunk(this.world, holder);
+                cir.setReturnValue(holder.getProtoChunk().getChunk());
+                return;
+            }
+            // In flight: bump priority to IMMEDIATE and wait up to 50ms for completion
+            holder.bumpPriority(com.cleanroommc.worldflow.pipeline.GenerationPriority.IMMEDIATE);
+            try {
+                Chunk chunk = holder.getFuture().get(50, java.util.concurrent.TimeUnit.MILLISECONDS);
+                if (chunk != null) {
+                    PublishManager.INSTANCE.publishChunk(this.world, holder);
+                    cir.setReturnValue(chunk);
+                    return;
+                }
+            } catch (Throwable ignored) {
+            }
+            // Timed out: remove in-flight holder to prevent conflict with inline generation
+            GenerationScheduler.getInstance().removeInFlight(key);
         }
 
-        // 4. Await or generate via parallel pipeline (Pregen / Sync caller fallback)
-        Chunk chunk = GenerationScheduler.getInstance().awaitOrGenerateSync(this.world, x, z, 200L);
-        if (chunk != null) {
-            cir.setReturnValue(chunk);
-        }
+        // 4. Synchronous callers (Chunk-Pregenerator, commands, /otg, etc.) bypass
+        // the staged pipeline and take the vanilla inline path!
+        // Returning here without calling cir.setReturnValue allows ChunkProviderServer.provideChunk
+        // to execute its vanilla inline generation & population.
     }
 }
