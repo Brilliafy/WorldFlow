@@ -20,7 +20,47 @@ import java.lang.reflect.Method;
  */
 public class OTGParallelContext {
 
-    public static final java.util.concurrent.locks.ReentrantLock OTG_STRUCTURE_LOCK = new java.util.concurrent.locks.ReentrantLock();
+    public static final int NUM_SHARDS = 16;
+    private static final java.util.concurrent.locks.ReentrantLock[] SHARDED_LOCKS = new java.util.concurrent.locks.ReentrantLock[NUM_SHARDS];
+
+    static {
+        for (int i = 0; i < NUM_SHARDS; i++) {
+            SHARDED_LOCKS[i] = new java.util.concurrent.locks.ReentrantLock();
+        }
+    }
+
+    public static final java.util.concurrent.locks.ReentrantLock OTG_STRUCTURE_LOCK = SHARDED_LOCKS[0];
+
+    public static java.util.concurrent.locks.ReentrantLock getStructureLock(int chunkX, int chunkZ) {
+        int macroX = chunkX >> 2;
+        int macroZ = chunkZ >> 2;
+        int hash = (macroX * 31 + macroZ) & (NUM_SHARDS - 1);
+        return SHARDED_LOCKS[hash];
+    }
+
+    public static boolean tryLockAll(long timeout, java.util.concurrent.TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        int acquired = 0;
+        for (int i = 0; i < NUM_SHARDS; i++) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0 || !SHARDED_LOCKS[i].tryLock(remaining, java.util.concurrent.TimeUnit.NANOSECONDS)) {
+                for (int j = 0; j < acquired; j++) {
+                    SHARDED_LOCKS[j].unlock();
+                }
+                return false;
+            }
+            acquired++;
+        }
+        return true;
+    }
+
+    public static void unlockAll() {
+        for (int i = 0; i < NUM_SHARDS; i++) {
+            if (SHARDED_LOCKS[i].isHeldByCurrentThread()) {
+                SHARDED_LOCKS[i].unlock();
+            }
+        }
+    }
     private static final ThreadLocal<java.util.Map<Integer, ChunkProviderOTG>> THREAD_LOCAL_PROVIDERS = ThreadLocal.withInitial(java.util.HashMap::new);
     private static Constructor<ForgeChunkBuffer> bufferConstructor;
     private static Method toChunkMethod;

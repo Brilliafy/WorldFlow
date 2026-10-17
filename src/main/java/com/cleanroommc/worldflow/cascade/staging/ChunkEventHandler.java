@@ -18,8 +18,6 @@ public class ChunkEventHandler {
         if (event.getWorld().isRemote || !(event.getWorld() instanceof WorldServer)) {
             return;
         }
-        WorldServer worldServer = (WorldServer) event.getWorld();
-        WorkerGeneratorContext.fireInitNoiseGensEvent(worldServer, null);
     }
 
     @SubscribeEvent(priority = EventPriority.HIGHEST)

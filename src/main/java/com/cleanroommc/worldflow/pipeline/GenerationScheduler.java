@@ -411,21 +411,22 @@ public class GenerationScheduler {
             GeneratorSafetyLevel genSafety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
             if (isOtg || genSafety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
+                java.util.concurrent.locks.ReentrantLock lock = OTGParallelContext.getStructureLock(pos.x, pos.z);
                 boolean acquired = false;
                 try {
-                    acquired = OTGParallelContext.OTG_STRUCTURE_LOCK.tryLock(15, TimeUnit.SECONDS);
+                    acquired = lock.tryLock(15, TimeUnit.SECONDS);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                 }
                 if (!acquired) {
-                    WorldFlow.LOGGER.warn("[WorldFlow] Timed out waiting for OTG_STRUCTURE_LOCK for chunk [{}, {}], falling back to main-thread serial", pos.x, pos.z);
+                    WorldFlow.LOGGER.warn("[WorldFlow] Timed out waiting for structure lock for chunk [{}, {}], falling back to main-thread serial", pos.x, pos.z);
                     fallbackToMainThreadSerial(holder);
                     return;
                 }
                 try {
                     generator.populate(pos.x, pos.z);
                 } finally {
-                    OTGParallelContext.OTG_STRUCTURE_LOCK.unlock();
+                    lock.unlock();
                 }
             } else {
                 this.parallelCount.incrementAndGet();

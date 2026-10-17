@@ -32,10 +32,10 @@ public abstract class ForgeEngineMixin {
             return;
         }
 
-        // Try to acquire the structure lock with a short 50ms timeout so the main tick thread never stalls
+        // Try to acquire all structure locks with a short 50ms timeout so the main tick thread never stalls
         boolean acquired = false;
         try {
-            acquired = OTGParallelContext.OTG_STRUCTURE_LOCK.tryLock(50, TimeUnit.MILLISECONDS);
+            acquired = OTGParallelContext.tryLockAll(50, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -46,7 +46,7 @@ public abstract class ForgeEngineMixin {
             } catch (Throwable t) {
                 WorldFlow.LOGGER.error("[WorldFlow] Error saving OTG structure cache to disk", t);
             } finally {
-                OTGParallelContext.OTG_STRUCTURE_LOCK.unlock();
+                OTGParallelContext.unlockAll();
             }
         } else {
             // Gen-lever thread is currently populating structures.

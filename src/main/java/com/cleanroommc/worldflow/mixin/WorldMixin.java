@@ -241,4 +241,18 @@ public abstract class WorldMixin {
             cir.setReturnValue(ThreadLocalWorldView.getCombinedLight((World) (Object) this, pos, lightValue));
         }
     }
+
+    @Inject(method = "checkLightFor(Lnet/minecraft/world/EnumSkyBlock;Lnet/minecraft/util/math/BlockPos;)Z", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onCheckLightFor(EnumSkyBlock lightType, BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            cir.setReturnValue(true);
+        }
+    }
+
+    @Inject(method = "checkLight(Lnet/minecraft/util/math/BlockPos;)Z", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onCheckLight(BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            cir.setReturnValue(true);
+        }
+    }
 }
