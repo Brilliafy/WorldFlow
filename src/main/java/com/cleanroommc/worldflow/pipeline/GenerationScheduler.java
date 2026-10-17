@@ -1,0 +1,313 @@
+package com.cleanroommc.worldflow.pipeline;
+
+import com.cleanroommc.worldflow.WorldFlow;
+import com.cleanroommc.worldflow.config.ModConfig;
+import com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView;
+import net.minecraft.util.math.ChunkPos;
+import net.minecraft.world.WorldServer;
+import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.gen.ChunkProviderServer;
+import com.cleanroommc.worldflow.pipeline.compat.CompatRegistry;
+import com.cleanroommc.worldflow.pipeline.compat.GeneratorSafetyLevel;
+import com.cleanroommc.worldflow.pipeline.isolation.WorkerGeneratorContext;
+import net.minecraft.world.gen.IChunkGenerator;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.terraingen.PopulateChunkEvent;
+import net.minecraftforge.fml.common.IWorldGenerator;
+import net.minecraftforge.fml.common.registry.GameRegistry;
+
+import javax.annotation.Nullable;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Coordinates staged chunk generation dependencies, worker execution, and backpressure.
+ */
+public class GenerationScheduler {
+
+    private static final GenerationScheduler INSTANCE = new GenerationScheduler();
+
+    private final Map<Long, StatusHolder> inFlight = new ConcurrentHashMap<>();
+    public final AtomicLong totalGenerationsRequested = new AtomicLong(0);
+
+    public static GenerationScheduler getInstance() {
+        return INSTANCE;
+    }
+
+    private GenerationScheduler() {
+    }
+
+    public CompletableFuture<Chunk> requestChunk(WorldServer world, int x, int z, GenerationPriority priority) {
+        return requestChunk(world, x, z, ChunkStatus.FULL, priority);
+    }
+
+    public CompletableFuture<Chunk> requestChunk(WorldServer world, int x, int z, ChunkStatus targetStatus, GenerationPriority priority) {
+        long key = ChunkPos.asLong(x, z);
+        totalGenerationsRequested.incrementAndGet();
+
+        // 1. Is chunk already in memory?
+        Chunk loaded = world.getChunkProvider().getLoadedChunk(x, z);
+        if (loaded != null) {
+            return CompletableFuture.completedFuture(loaded);
+        }
+
+        // 2. Already tracked in pipeline?
+        StatusHolder existing = this.inFlight.get(key);
+        if (existing != null) {
+            existing.bumpPriority(priority);
+            existing.setTargetStatus(targetStatus);
+            return existing.getFuture();
+        }
+
+        // 3. Register new StatusHolder
+        StatusHolder holder = new StatusHolder(world, x, z, targetStatus, priority);
+        StatusHolder prev = this.inFlight.putIfAbsent(key, holder);
+        if (prev != null) {
+            prev.bumpPriority(priority);
+            prev.setTargetStatus(targetStatus);
+            return prev.getFuture();
+        }
+
+        // 4. Begin staged pipeline execution
+        advanceChunk(holder);
+        return holder.getFuture();
+    }
+
+    public void advanceChunk(StatusHolder holder) {
+        if (holder.isDone()) {
+            return;
+        }
+
+        ChunkStatus current = holder.getCurrentStatus();
+
+        if (current == ChunkStatus.EMPTY) {
+            // Stage 0 -> CARVERS: generate base terrain (noise, surface, carvers)
+            GenerationWorkerPool.getInstance().executeWorker(() -> executeBaseGeneration(holder));
+        } else if (current == ChunkStatus.CARVERS) {
+            // Stage CARVERS -> FEATURES: requires 3x3 neighbours at least at CARVERS
+            checkAndScheduleFeatures(holder);
+        } else if (current == ChunkStatus.FEATURES || current == ChunkStatus.LIGHT) {
+            // Hand off to publish manager
+            PublishManager.INSTANCE.enqueueReady(holder);
+        }
+    }
+
+    private void executeBaseGeneration(StatusHolder holder) {
+        WorldServer world = holder.getWorld();
+        ChunkPos pos = holder.getPos();
+        ProtoChunk proto = holder.getProtoChunk();
+
+        ThreadLocalWorldView.enter(world, pos, proto, "BaseGen");
+        try {
+            IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
+
+            Chunk generatedChunk = generator.generateChunk(pos.x, pos.z);
+            if (generatedChunk != null) {
+                proto.setUnderlyingChunk(generatedChunk);
+            }
+            holder.setCurrentStatus(ChunkStatus.CARVERS);
+        } catch (Throwable t) {
+            WorldFlow.LOGGER.error("[WorldFlow] Error generating base terrain for chunk [{}, {}]", pos.x, pos.z, t);
+        } finally {
+            ThreadLocalWorldView.exit();
+        }
+
+        // If target was only CARVERS (e.g. neighbour dependency), complete future now
+        if (holder.getTargetStatus() == ChunkStatus.CARVERS) {
+            holder.getFuture().complete(proto.getChunk());
+            return;
+        }
+
+        // Otherwise advance to features stage
+        advanceChunk(holder);
+    }
+
+    private void checkAndScheduleFeatures(StatusHolder holder) {
+        WorldServer world = holder.getWorld();
+        int cx = holder.getPos().x;
+        int cz = holder.getPos().z;
+
+        List<CompletableFuture<Chunk>> neighbourFutures = new ArrayList<>(8);
+        Map<Long, ProtoChunk> neighbourhood = new HashMap<>();
+        neighbourhood.put(holder.getChunkKey(), holder.getProtoChunk());
+
+        boolean allReady = true;
+
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                int nx = cx + dx;
+                int nz = cz + dz;
+                long nKey = ChunkPos.asLong(nx, nz);
+
+                Chunk loaded = world.getChunkProvider().getLoadedChunk(nx, nz);
+                if (loaded != null) {
+                    continue;
+                }
+
+                StatusHolder nHolder = this.inFlight.get(nKey);
+                if (nHolder != null && nHolder.getCurrentStatus().isAtLeast(ChunkStatus.CARVERS)) {
+                    neighbourhood.put(nKey, nHolder.getProtoChunk());
+                } else {
+                    allReady = false;
+                    // Request neighbour to reach at least CARVERS
+                    CompletableFuture<Chunk> nf = requestChunk(world, nx, nz, ChunkStatus.CARVERS, GenerationPriority.PLAYER);
+                    neighbourFutures.add(nf);
+                }
+            }
+        }
+
+        if (allReady) {
+            GenerationWorkerPool.getInstance().executeWorker(() -> executeFeatures(holder, neighbourhood));
+        } else {
+            // Wait for all missing neighbours to reach CARVERS, then schedule features
+            CompletableFuture.allOf(neighbourFutures.toArray(new CompletableFuture[0]))
+                    .thenRunAsync(() -> {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            for (int dz = -1; dz <= 1; dz++) {
+                                long nKey = ChunkPos.asLong(cx + dx, cz + dz);
+                                StatusHolder nHolder = this.inFlight.get(nKey);
+                                if (nHolder != null) {
+                                    neighbourhood.put(nKey, nHolder.getProtoChunk());
+                                }
+                            }
+                        }
+                        executeFeatures(holder, neighbourhood);
+                    }, GenerationWorkerPool.getInstance()::executeWorker);
+        }
+    }
+
+    private void executeFeatures(StatusHolder holder, Map<Long, ProtoChunk> neighbourhood) {
+        WorldServer world = holder.getWorld();
+        ChunkPos pos = holder.getPos();
+        ProtoChunk proto = holder.getProtoChunk();
+
+        ThreadLocalWorldView.enter(world, pos, proto, "Features");
+        ThreadLocalWorldView.attachNeighbourhood(neighbourhood);
+        try {
+            ChunkProviderServer provider = world.getChunkProvider();
+            IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
+            Random workerRand = WorkerGeneratorContext.get().rand;
+
+            // 1. PopulateChunkEvent.Pre
+            MinecraftForge.EVENT_BUS.post(new PopulateChunkEvent.Pre(generator, world, workerRand, pos.x, pos.z, false));
+
+            // 2. Standard population (ores, flora, structures)
+            generator.populate(pos.x, pos.z);
+
+            // 3. Forge GameRegistry world generators (thread-safe and serialized per-generator)
+            generateModWorldIsolated(pos.x, pos.z, world, generator, provider, workerRand);
+
+            // 4. PopulateChunkEvent.Post
+            MinecraftForge.EVENT_BUS.post(new PopulateChunkEvent.Post(generator, world, workerRand, pos.x, pos.z, false));
+
+            proto.setTerrainPopulated(true);
+            holder.setCurrentStatus(ChunkStatus.LIGHT);
+        } catch (Throwable t) {
+            WorldFlow.LOGGER.error("[WorldFlow] Error decorating chunk [{}, {}]", pos.x, pos.z, t);
+        } finally {
+            ThreadLocalWorldView.exit();
+        }
+
+        // Ready for publish to main thread
+        PublishManager.INSTANCE.enqueueReady(holder);
+    }
+
+    private static volatile List<IWorldGenerator> cachedSortedGenerators;
+
+    private void generateModWorldIsolated(int chunkX, int chunkZ, WorldServer world, IChunkGenerator chunkGenerator, ChunkProviderServer chunkProvider, Random rand) {
+        if (cachedSortedGenerators == null) {
+            try {
+                java.lang.reflect.Field field = GameRegistry.class.getDeclaredField("sortedGeneratorList");
+                field.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                List<IWorldGenerator> list = (List<IWorldGenerator>) field.get(null);
+                if (list == null) {
+                    java.lang.reflect.Method m = GameRegistry.class.getDeclaredMethod("computeSortedGeneratorList");
+                    m.setAccessible(true);
+                    m.invoke(null);
+                    list = (List<IWorldGenerator>) field.get(null);
+                }
+                cachedSortedGenerators = list;
+            } catch (Throwable t) {
+                // Fallback to standard GameRegistry.generateWorld if reflection fails
+                GameRegistry.generateWorld(chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                return;
+            }
+        }
+
+        long worldSeed = world.getSeed();
+        Random fmlRandom = new Random(worldSeed);
+        long xSeed = fmlRandom.nextLong() >> 2 + 1L;
+        long zSeed = fmlRandom.nextLong() >> 2 + 1L;
+        long chunkSeed = (xSeed * chunkX + zSeed * chunkZ) ^ worldSeed;
+
+        for (IWorldGenerator generator : cachedSortedGenerators) {
+            fmlRandom.setSeed(chunkSeed);
+            GeneratorSafetyLevel safety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
+            if (safety == GeneratorSafetyLevel.SERIALIZE) {
+                synchronized (generator) {
+                    generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                }
+            } else if (safety == GeneratorSafetyLevel.PARALLEL_SAFE) {
+                generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+            } else if (safety == GeneratorSafetyLevel.UNSAFE) {
+                try {
+                    GenerationWorkerPool.getInstance().submitSerializer(() -> {
+                        generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                    }).get(10, TimeUnit.SECONDS);
+                } catch (Throwable t) {
+                    WorldFlow.LOGGER.warn("[WorldFlow] UNSAFE generator {} timed out or failed in chunk [{}, {}]", generator.getClass().getName(), chunkX, chunkZ, t);
+                }
+            }
+        }
+    }
+
+    @Nullable
+    public Chunk awaitOrGenerateSync(WorldServer world, int x, int z, long timeoutMs) {
+        // 1. Check live loaded chunks
+        Chunk loaded = world.getChunkProvider().getLoadedChunk(x, z);
+        if (loaded != null) {
+            return loaded;
+        }
+
+        // 2. Request chunk from pipeline with IMMEDIATE priority
+        CompletableFuture<Chunk> future = requestChunk(world, x, z, ChunkStatus.FULL, GenerationPriority.IMMEDIATE);
+
+        // 3. Wait up to timeout
+        try {
+            return future.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (Throwable ignored) {
+        }
+
+        // 4. If timed out, publish any completed proto or return null to allow Forge sync fallback
+        long key = ChunkPos.asLong(x, z);
+        StatusHolder holder = this.inFlight.get(key);
+        if (holder != null && holder.getProtoChunk() != null) {
+            PublishManager.INSTANCE.publishChunk(world, holder);
+            return holder.getProtoChunk().getChunk();
+        }
+
+        return null;
+    }
+
+    @Nullable
+    public StatusHolder getInFlight(long key) {
+        return this.inFlight.get(key);
+    }
+
+    public void removeInFlight(long key) {
+        this.inFlight.remove(key);
+    }
+
+    public int getInFlightCount() {
+        return this.inFlight.size();
+    }
+}

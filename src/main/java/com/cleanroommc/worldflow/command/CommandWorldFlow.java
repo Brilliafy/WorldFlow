@@ -32,7 +32,7 @@ public class CommandWorldFlow extends CommandBase {
 
     @Override
     public String getUsage(ICommandSender sender) {
-        return "/worldflow <noise|cascade|pregen> ...";
+        return "/worldflow <noise|cascade|pregen|pipeline> ...";
     }
 
     @Override
@@ -65,9 +65,31 @@ public class CommandWorldFlow extends CommandBase {
             case "pregenerator":
                 executePregen(sender, rest);
                 return;
+            case "pipeline":
+            case "parallel":
+                executePipeline(sender, rest);
+                return;
             default:
                 sender.sendMessage(new TextComponentString(TextFormatting.RED + "Usage: " + getUsage(sender)));
         }
+    }
+
+    private void executePipeline(ICommandSender sender, String[] args) {
+        sender.sendMessage(new TextComponentString(TextFormatting.GOLD + "=== Parallel Chunk Generation Pipeline ==="));
+        sender.sendMessage(new TextComponentString(TextFormatting.YELLOW + "Status: " +
+                (ModConfig.CONCURRENCY.enableParallelGeneration ? TextFormatting.GREEN + "ACTIVE" : TextFormatting.RED + "DISABLED")));
+        sender.sendMessage(new TextComponentString(TextFormatting.AQUA + "Worker Threads: " +
+                TextFormatting.WHITE + com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.effectiveThreads() +
+                TextFormatting.GRAY + " (active: " + com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().getActiveWorkerCount() +
+                ", queued: " + com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().getQueueSize() + ")"));
+        sender.sendMessage(new TextComponentString(TextFormatting.GREEN + "In-Flight Chunks: " +
+                TextFormatting.WHITE + com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().getInFlightCount() +
+                TextFormatting.GRAY + " | Ready to Publish: " +
+                TextFormatting.WHITE + com.cleanroommc.worldflow.pipeline.PublishManager.INSTANCE.getPendingCount()));
+        sender.sendMessage(new TextComponentString(TextFormatting.GRAY + "Total Requested: " +
+                com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().totalGenerationsRequested.get() +
+                " | Total Published: " +
+                com.cleanroommc.worldflow.pipeline.PublishManager.INSTANCE.totalChunksPublished.get()));
     }
 
     private void executeNoise(ICommandSender sender, String[] args) {
@@ -254,7 +276,7 @@ public class CommandWorldFlow extends CommandBase {
     @Override
     public List<String> getTabCompletions(MinecraftServer server, ICommandSender sender, String[] args, @Nullable BlockPos targetPos) {
         if (args.length == 1) {
-            return getListOfStringsMatchingLastWord(args, "noise", "cascade", "pregen");
+            return getListOfStringsMatchingLastWord(args, "noise", "cascade", "pregen", "pipeline");
         }
         if (args.length == 2 && "cascade".equalsIgnoreCase(args[0])) {
             return getListOfStringsMatchingLastWord(args, "status", "info", "flush", "clear", "toggle", "reload");

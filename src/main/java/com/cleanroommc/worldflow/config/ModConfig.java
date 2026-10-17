@@ -21,6 +21,60 @@ public class ModConfig {
     @Config.Comment("Gentle budgeted background pre-generation settings")
     public static Pregenerator PREGENERATOR = new Pregenerator();
 
+    @Config.Name("Concurrency")
+    @Config.Comment("True parallel chunk generation pipeline settings")
+    public static Concurrency CONCURRENCY = new Concurrency();
+
+    public static class Concurrency {
+
+        @Config.Comment("Master toggle for parallel chunk generation pipeline.")
+        @Config.Name("Enable Parallel Generation")
+        public boolean enableParallelGeneration = true;
+
+        @Config.Comment("Number of parallel worker threads for chunk generation (0 = auto: CPU cores - 1).")
+        @Config.RangeInt(min = 0, max = 64)
+        @Config.Name("Parallel Worker Threads")
+        public int parallelWorkerThreads = 0;
+
+        @Config.Comment("Maximum concurrent chunks in-flight across all generation pipeline stages.")
+        @Config.RangeInt(min = 16, max = 512)
+        @Config.Name("Max In-Flight Generations")
+        public int maxInFlightGenerations = 64;
+
+        @Config.Comment("Enable thread-local generation-world isolation barrier.")
+        @Config.Name("Enable ThreadLocal Isolation")
+        public boolean enableThreadLocalWorldView = true;
+
+        @Config.Comment("Enable concurrent OTG/Dregora terrain generation via per-worker ChunkProviderOTG.")
+        @Config.Name("Enable Concurrent OTG Terrain")
+        public boolean enableOTGParallelTerrain = true;
+
+        @Config.Comment("List of class or package substrings to treat as PARALLEL_SAFE world generators.")
+        @Config.Name("Parallel Safe Generators")
+        public String[] parallelSafeGenerators = new String[] {
+                "net.minecraft.",
+                "cofh.",
+                "forestry.",
+                "biomesoplenty."
+        };
+
+        @Config.Comment("List of class or package substrings to serialize through the off-tick gen-lever thread.")
+        @Config.Name("Serialized Generators")
+        public String[] serializedGenerators = new String[] {
+                "com.pg85.otg.",
+                "ivorius.reccomplex.",
+                "battletowers.",
+                "dungeonmobs.",
+                "greymerk.roguelike.",
+                "com.github.alexthe666.iceandfire.",
+                "com.bobmowzie.mowziesmobs."
+        };
+
+        @Config.Comment("List of class or package substrings strictly unsafe for off-thread execution (deferred to main tick thread).")
+        @Config.Name("Unsafe Generators")
+        public String[] unsafeGenerators = new String[] {};
+    }
+
     public static class Noise {
 
         @Config.Comment("Master toggle to enable/disable vectorized noise calculation engine.")

@@ -3,11 +3,14 @@ package com.cleanroommc.worldflow.mixin.otg;
 import com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer;
 import com.cleanroommc.worldflow.cascade.staging.GenerationContext;
 import com.cleanroommc.worldflow.config.ModConfig;
+import com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext;
 import com.pg85.otg.common.LocalMaterialData;
 import com.pg85.otg.forge.generator.OTGChunkGenerator;
 import com.pg85.otg.forge.materials.ForgeMaterialData;
 import com.pg85.otg.forge.util.NBTHelper;
 import com.pg85.otg.forge.world.ForgeWorld;
+import com.pg85.otg.util.ChunkCoordinate;
+import com.pg85.otg.util.FifoMap;
 import com.pg85.otg.util.bo3.NamedBinaryTag;
 import net.minecraft.block.state.IBlockState;
 import net.minecraft.nbt.NBTTagCompound;
@@ -19,12 +22,38 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(value = OTGChunkGenerator.class, remap = false)
 public abstract class OTGChunkGeneratorMixin {
 
     @Shadow
     private ForgeWorld world;
+
+    @Shadow
+    private FifoMap unloadedChunksCache;
+
+    @Inject(method = "getBlocks(IIZ)Lnet/minecraft/world/chunk/Chunk;",
+            at = @At("HEAD"),
+            cancellable = true,
+            remap = false)
+    private void worldflow$onOTGGetBlocks(int chunkX, int chunkZ, boolean provideChunk, CallbackInfoReturnable<Chunk> cir) {
+        if (!ModConfig.CONCURRENCY.enableOTGParallelTerrain) {
+            return;
+        }
+
+        ChunkCoordinate chunkCoord = ChunkCoordinate.fromChunkCoords(chunkX, chunkZ);
+        Chunk chunk = (Chunk) this.unloadedChunksCache.get(chunkCoord);
+        if (chunk == null) {
+            chunk = OTGParallelContext.generateOTGChunk(this.world, chunkX, chunkZ);
+            if (chunk != null && !provideChunk) {
+                this.unloadedChunksCache.put(chunkCoord, chunk);
+            }
+        }
+        if (chunk != null) {
+            cir.setReturnValue(chunk);
+        }
+    }
 
     @Inject(method = "setBlock(IIILcom/pg85/otg/common/LocalMaterialData;Lcom/pg85/otg/util/bo3/NamedBinaryTag;)V",
             at = @At("HEAD"),

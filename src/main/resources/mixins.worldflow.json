@@ -7,8 +7,17 @@
   "compatibilityLevel": "JAVA_8",
   "mixins": [
     "NoiseGeneratorImprovedMixin",
+    "WorldMixin",
     "WorldServerMixin",
-    "ChunkMixin"
+    "ChunkMixin",
+    "PlayerChunkMapEntryMixin",
+    "ChunkProviderServerMixin",
+    "ChunkGeneratorOverworldMixin",
+    "IntCacheMixin",
+    "BiomeDecoratorMixin",
+    "BlockFallingMixin",
+    "MapStorageMixin",
+    "MapGenStructureDataMixin"
   ],
   "server": [],
   "client": []

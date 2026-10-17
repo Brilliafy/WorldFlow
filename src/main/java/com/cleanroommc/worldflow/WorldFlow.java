@@ -37,12 +37,21 @@ public class WorldFlow {
     public void init(FMLInitializationEvent event) {
         MinecraftForge.EVENT_BUS.register(new PregeneratorEngine());
         MinecraftForge.EVENT_BUS.register(ChunkEventHandler.class);
+        com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().init();
         LOGGER.info("[WorldFlow] Vectorized SIMD-friendly noise calculation engine initialized.");
         LOGGER.info("[WorldFlow] Gentle pre-generator initialised.");
+        LOGGER.info("[WorldFlow] True parallel staged generation pipeline active ({} worker threads).",
+                com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.effectiveThreads());
     }
 
     @Mod.EventHandler
     public void serverStarting(FMLServerStartingEvent event) {
         event.registerServerCommand(new CommandWorldFlow());
+    }
+
+    @Mod.EventHandler
+    public void serverStopping(net.minecraftforge.fml.common.event.FMLServerStoppingEvent event) {
+        LOGGER.info("[WorldFlow] Shutting down parallel generation worker pools.");
+        com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().shutdown();
     }
 }
