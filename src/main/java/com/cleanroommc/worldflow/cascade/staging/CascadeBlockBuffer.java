@@ -17,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import net.minecraft.block.Block;
+import net.minecraft.entity.Entity;
+import net.minecraft.util.math.MathHelper;
 
 public class CascadeBlockBuffer {
     public static final CascadeBlockBuffer INSTANCE = new CascadeBlockBuffer();
@@ -37,9 +39,24 @@ public class CascadeBlockBuffer {
 
     private final Map<Integer, Map<ChunkPos, List<StagedBlock>>> memoryStaging = new ConcurrentHashMap<>();
     private final Map<Integer, Map<ChunkPos, List<StagedTick>>> stagedTicks = new ConcurrentHashMap<>();
+    private final Map<Integer, Map<ChunkPos, List<Entity>>> stagedEntities = new ConcurrentHashMap<>();
     public final AtomicLong totalCascadesPrevented = new AtomicLong(0);
     public final AtomicLong totalBlocksStaged = new AtomicLong(0);
     public final AtomicLong totalBlocksFlushed = new AtomicLong(0);
+    public final AtomicLong totalEntitiesStaged = new AtomicLong(0);
+    public final AtomicLong totalEntitiesFlushed = new AtomicLong(0);
+
+    public void stageEntity(WorldServer world, Entity entity) {
+        if (world == null || entity == null) return;
+        int dim = world.provider.getDimension();
+        int chunkX = MathHelper.floor(entity.posX / 16.0);
+        int chunkZ = MathHelper.floor(entity.posZ / 16.0);
+        ChunkPos cp = new ChunkPos(chunkX, chunkZ);
+        Map<ChunkPos, List<Entity>> dimMap = this.stagedEntities.computeIfAbsent(dim, d -> new ConcurrentHashMap<>());
+        List<Entity> list = dimMap.computeIfAbsent(cp, c -> Collections.synchronizedList(new ArrayList<>()));
+        list.add(entity);
+        totalEntitiesStaged.incrementAndGet();
+    }
 
     public void stageTickUpdate(WorldServer world, BlockPos pos, Block block, int delay, int priority) {
         int dim = world.provider.getDimension();
@@ -147,8 +164,51 @@ public class CascadeBlockBuffer {
             }
         }
 
+        // Flush staged entities for this chunk
+        Map<ChunkPos, List<Entity>> entityDimMap = this.stagedEntities.get(dim);
+        if (entityDimMap != null) {
+            List<Entity> entities = entityDimMap.remove(chunkPos);
+            if (entities != null && !entities.isEmpty()) {
+                for (Entity entity : entities) {
+                    try {
+                        world.spawnEntity(entity);
+                        totalEntitiesFlushed.incrementAndGet();
+                    } catch (Throwable t) {
+                        WorldFlow.LOGGER.debug("[WorldFlow] Error spawning staged entity in chunk [{}, {}]", chunkPos.x, chunkPos.z, t);
+                    }
+                }
+            }
+        }
+
         chunk.markDirty();
         return count;
+    }
+
+    public void flushStagedEntitiesForLoadedChunks(WorldServer world) {
+        if (world == null) return;
+        int dim = world.provider.getDimension();
+        Map<ChunkPos, List<Entity>> entityDimMap = this.stagedEntities.get(dim);
+        if (entityDimMap == null || entityDimMap.isEmpty()) return;
+
+        Iterator<Map.Entry<ChunkPos, List<Entity>>> it = entityDimMap.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<ChunkPos, List<Entity>> entry = it.next();
+            ChunkPos pos = entry.getKey();
+            if (world.getChunkProvider().getLoadedChunk(pos.x, pos.z) != null) {
+                it.remove();
+                List<Entity> entities = entry.getValue();
+                if (entities != null) {
+                    for (Entity entity : entities) {
+                        try {
+                            world.spawnEntity(entity);
+                            totalEntitiesFlushed.incrementAndGet();
+                        } catch (Throwable t) {
+                            WorldFlow.LOGGER.debug("[WorldFlow] Error spawning staged entity in loaded chunk [{}, {}]", pos.x, pos.z, t);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     public int flushAll(WorldServer world) {
@@ -165,12 +225,14 @@ public class CascadeBlockBuffer {
                 totalFlushed += flushChunk(world, loaded);
             }
         }
+        flushStagedEntitiesForLoadedChunks(world);
         return totalFlushed;
     }
 
     public void clear() {
         this.memoryStaging.clear();
         this.stagedTicks.clear();
+        this.stagedEntities.clear();
     }
 
     public int getCurrentlyStagedCount() {

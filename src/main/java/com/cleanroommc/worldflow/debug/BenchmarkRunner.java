@@ -53,11 +53,22 @@ public class BenchmarkRunner {
                 long startFeatNanos = GenerationScheduler.getInstance().getTotalFeaturesNanos();
                 long startFeatCount = GenerationScheduler.getInstance().getTotalFeaturesCount();
 
+                int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
                 List<CompletableFuture<Chunk>> futures = new ArrayList<>(totalChunks);
                 for (int dx = -radius; dx <= radius; dx++) {
                     for (int dz = -radius; dz <= radius; dz++) {
                         int x = centerX + dx;
                         int z = centerZ + dz;
+
+                        // Bench backpressure: respect maxInFlight cap
+                        while (GenerationScheduler.getInstance().getInFlightCount() >= maxInFlight) {
+                            try {
+                                Thread.sleep(5);
+                            } catch (InterruptedException ignored) {
+                                break;
+                            }
+                        }
+
                         CompletableFuture<Chunk> future = GenerationScheduler.getInstance().requestChunk(
                                 world, x, z, ChunkStatus.FULL, GenerationPriority.PLAYER
                         );

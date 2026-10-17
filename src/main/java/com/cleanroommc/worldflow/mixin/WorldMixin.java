@@ -153,6 +153,10 @@ public abstract class WorldMixin {
         if (!ThreadLocalWorldView.isGenerating()) {
             return;
         }
+        if (entityIn == null) {
+            cir.setReturnValue(false);
+            return;
+        }
         if (!this.isRemote && entityIn instanceof EntityFallingBlock) {
             EntityFallingBlock falling = (EntityFallingBlock) entityIn;
             IBlockState state = falling.getBlock();
@@ -161,6 +165,11 @@ public abstract class WorldMixin {
                 ThreadLocalWorldView.setBlockState((World) (Object) this, pos, state, 3);
             }
             cir.setReturnValue(false);
+            return;
+        }
+        if (!this.isRemote && (Object) this instanceof WorldServer) {
+            CascadeBlockBuffer.INSTANCE.stageEntity((WorldServer) (Object) this, entityIn);
+            cir.setReturnValue(true);
         }
     }
 

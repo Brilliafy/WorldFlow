@@ -42,6 +42,7 @@ public class PublishManager {
      * Processes ready chunks up to maxBudget per tick to guarantee 0 tick lag.
      */
     public int tick(WorldServer world, int maxBudget) {
+        CascadeBlockBuffer.INSTANCE.flushStagedEntitiesForLoadedChunks(world);
         if (this.pendingPublishQueue.isEmpty()) {
             return 0;
         }

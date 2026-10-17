@@ -22,9 +22,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -36,8 +38,12 @@ public class GenerationScheduler {
     private static final GenerationScheduler INSTANCE = new GenerationScheduler();
 
     private final Map<Long, StatusHolder> inFlight = new ConcurrentHashMap<>();
+    private final Queue<StatusHolder> pendingRequestQueue = new ConcurrentLinkedQueue<>();
+    private final Map<Long, StatusHolder> pendingRequests = new ConcurrentHashMap<>();
     public final AtomicLong totalGenerationsRequested = new AtomicLong(0);
     private final long pipelineStartTimeMs = System.currentTimeMillis();
+    private final AtomicLong windowStartTimeMs = new AtomicLong(0);
+    private final AtomicLong windowStartGen = new AtomicLong(0);
     private final AtomicLong totalBaseGenNanos = new AtomicLong(0);
     private final AtomicLong totalBaseGenCount = new AtomicLong(0);
     private final AtomicLong totalFeaturesNanos = new AtomicLong(0);
@@ -59,6 +65,14 @@ public class GenerationScheduler {
     public CompletableFuture<Chunk> requestChunk(WorldServer world, int x, int z, ChunkStatus targetStatus, GenerationPriority priority) {
         long key = ChunkPos.asLong(x, z);
         totalGenerationsRequested.incrementAndGet();
+
+        // Initialize burst window if idle
+        if (this.inFlight.isEmpty() && this.pendingRequests.isEmpty()) {
+            long now = System.currentTimeMillis();
+            long totalGen = PublishManager.INSTANCE.totalChunksPublished.get() + this.totalChunksInline.get();
+            this.windowStartTimeMs.set(now);
+            this.windowStartGen.set(totalGen);
+        }
 
         // 1. Is chunk already in memory?
         Chunk loaded = world.getChunkProvider().getLoadedChunk(x, z);
@@ -88,18 +102,37 @@ public class GenerationScheduler {
             return existing.getFuture();
         }
 
+        StatusHolder pending = this.pendingRequests.get(key);
+        if (pending != null) {
+            pending.bumpPriority(priority);
+            pending.setTargetStatus(targetStatus);
+            return pending.getFuture();
+        }
+
         // 5. In-flight backpressure / memory guard: Cap maximum concurrent in-flight generations
-        int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 64;
+        int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
+        boolean isServerThread = world.getMinecraftServer() != null && world.getMinecraftServer().isCallingFromMinecraftThread();
+
         if (this.inFlight.size() >= maxInFlight) {
-            long waitStart = System.currentTimeMillis();
-            while (this.inFlight.size() >= maxInFlight && (System.currentTimeMillis() - waitStart < 50)) {
-                try {
-                    Thread.sleep(5);
-                } catch (InterruptedException ignored) {}
+            if (!isServerThread) {
+                // Background callers (e.g. bench or async threads): throttle smoothly
+                while (this.inFlight.size() >= maxInFlight) {
+                    try {
+                        Thread.sleep(5);
+                    } catch (InterruptedException e) {
+                        break;
+                    }
+                }
+            } else {
+                // Main tick thread callers: queue to prevent stalling the tick
+                StatusHolder holder = new StatusHolder(world, x, z, targetStatus, priority);
+                this.pendingRequests.put(key, holder);
+                this.pendingRequestQueue.add(holder);
+                return holder.getFuture();
             }
         }
 
-        // 6. Register new StatusHolder
+        // 6. Register new StatusHolder in inFlight
         StatusHolder holder = new StatusHolder(world, x, z, targetStatus, priority);
         StatusHolder prev = this.inFlight.putIfAbsent(key, holder);
         if (prev != null) {
@@ -402,16 +435,28 @@ public class GenerationScheduler {
         long featCount = this.totalFeaturesCount.get();
         long pipeCount = this.totalChunksPipeline.get();
         long inlineCount = this.totalChunksInline.get();
+        long totalGen = totalPublished + inlineCount;
 
         if (totalPublished == 0 && baseCount == 0 && featCount == 0 && pipeCount == 0 && inlineCount == 0 && this.inFlight.isEmpty()) {
             return;
         }
 
-        double elapsedSec = Math.max(1.0, (now - this.pipelineStartTimeMs) / 1000.0);
-        long totalGen = totalPublished + inlineCount;
-        double chunksPerSec = totalGen / elapsedSec;
-        double chunksPerMin = chunksPerSec * 60.0;
+        long winStart = this.windowStartTimeMs.get();
+        long startGen = this.windowStartGen.get();
+        double chunksPerSec = 0.0;
+        if (winStart > 0) {
+            long elapsedMs = now - winStart;
+            long deltaGen = totalGen - startGen;
+            if (elapsedMs >= 500 && deltaGen >= 0) {
+                chunksPerSec = (deltaGen * 1000.0) / elapsedMs;
+            }
+        }
 
+        // Reset window for next measurement period
+        this.windowStartTimeMs.set(now);
+        this.windowStartGen.set(totalGen);
+
+        double chunksPerMin = chunksPerSec * 60.0;
         double avgBaseMs = baseCount > 0 ? (this.totalBaseGenNanos.get() / 1_000_000.0) / baseCount : 0.0;
         double avgFeatMs = featCount > 0 ? (this.totalFeaturesNanos.get() / 1_000_000.0) / featCount : 0.0;
         int queueDepth = PublishManager.INSTANCE.getPendingCount();
@@ -475,9 +520,27 @@ public class GenerationScheduler {
 
     public void removeInFlight(long key) {
         this.inFlight.remove(key);
+        drainPendingRequests();
+    }
+
+    private void drainPendingRequests() {
+        int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
+        while (this.inFlight.size() < maxInFlight && !this.pendingRequestQueue.isEmpty()) {
+            StatusHolder holder = this.pendingRequestQueue.poll();
+            if (holder == null) break;
+            long key = holder.getChunkKey();
+            this.pendingRequests.remove(key);
+            if (holder.isDone()) continue;
+
+            StatusHolder prev = this.inFlight.putIfAbsent(key, holder);
+            if (prev == null) {
+                advanceChunk(holder);
+            }
+        }
     }
 
     public void quiesceAndDrain(WorldServer world, long timeoutMs) {
+        drainPendingRequests();
         long deadline = System.currentTimeMillis() + timeoutMs;
         // 1. Await or complete in-flight chunks belonging to this world
         for (Map.Entry<Long, StatusHolder> entry : this.inFlight.entrySet()) {

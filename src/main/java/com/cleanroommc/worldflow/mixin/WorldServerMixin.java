@@ -99,4 +99,17 @@ public abstract class WorldServerMixin {
             }
         }
     }
+
+    @Inject(method = "onEntityAdded", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onEntityAdded(net.minecraft.entity.Entity entityIn, CallbackInfo ci) {
+        WorldServer world = (WorldServer) (Object) this;
+        if (world.getMinecraftServer() != null && !world.getMinecraftServer().isCallingFromMinecraftThread()) {
+            WorldFlow.LOGGER.warn("[WorldFlow] Off-thread WorldServer.onEntityAdded detected for {} on thread {}! Staging to tick thread.",
+                    entityIn != null ? entityIn.getName() : "null", Thread.currentThread().getName());
+            if (entityIn != null) {
+                CascadeBlockBuffer.INSTANCE.stageEntity(world, entityIn);
+            }
+            ci.cancel();
+        }
+    }
 }

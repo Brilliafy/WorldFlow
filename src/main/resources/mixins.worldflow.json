@@ -16,7 +16,8 @@
     "IntCacheMixin",
     "BiomeDecoratorMixin",
     "MapStorageMixin",
-    "MapGenStructureDataMixin"
+    "MapGenStructureDataMixin",
+    "EntityTrackerMixin"
   ],
   "server": [],
   "client": []
