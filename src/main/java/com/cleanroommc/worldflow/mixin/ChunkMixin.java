@@ -14,8 +14,22 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import com.cleanroommc.worldflow.pipeline.IWorldFlowChunk;
+
 @Mixin(Chunk.class)
-public abstract class ChunkMixin {
+public abstract class ChunkMixin implements IWorldFlowChunk {
+
+    private IWorldFlowChunk.GenPath worldflow$genPath = IWorldFlowChunk.GenPath.UNKNOWN;
+
+    @Override
+    public IWorldFlowChunk.GenPath worldflow$getGenPath() {
+        return this.worldflow$genPath;
+    }
+
+    @Override
+    public void worldflow$setGenPath(IWorldFlowChunk.GenPath path) {
+        this.worldflow$genPath = path;
+    }
 
     @Shadow
     @Final

@@ -32,7 +32,7 @@ public class CommandWorldFlow extends CommandBase {
 
     @Override
     public String getUsage(ICommandSender sender) {
-        return "/worldflow <noise|cascade|pregen|pipeline> ...";
+        return "/worldflow <noise|cascade|pregen|pipeline|dumpchunk> ...";
     }
 
     @Override
@@ -68,6 +68,9 @@ public class CommandWorldFlow extends CommandBase {
             case "pipeline":
             case "parallel":
                 executePipeline(sender, rest);
+                return;
+            case "dumpchunk":
+                executeDumpChunk(server, sender, rest);
                 return;
             default:
                 sender.sendMessage(new TextComponentString(TextFormatting.RED + "Usage: " + getUsage(sender)));
@@ -273,13 +276,46 @@ public class CommandWorldFlow extends CommandBase {
         }
     }
 
+    private void executeDumpChunk(MinecraftServer server, ICommandSender sender, String[] args) {
+        if (!sender.canUseCommand(2, getName())) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "You do not have permission to use the dumpchunk command."));
+            return;
+        }
+        if (args.length < 2) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "Usage: /worldflow dumpchunk <x> <z> [inline|pipeline|both]"));
+            return;
+        }
+        int x, z;
+        try {
+            x = Integer.parseInt(args[0]);
+            z = Integer.parseInt(args[1]);
+        } catch (NumberFormatException e) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid chunk coordinates: " + args[0] + ", " + args[1]));
+            return;
+        }
+        String mode = args.length >= 3 ? args[2].toLowerCase(Locale.ROOT) : "both";
+        WorldServer world = (WorldServer) sender.getEntityWorld();
+        if (world == null && server.worlds.length > 0) {
+            world = server.worlds[0];
+        }
+        if (world == null) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "WorldServer not available."));
+            return;
+        }
+        sender.sendMessage(new TextComponentString(TextFormatting.YELLOW + "Executing dumpchunk for [" + x + ", " + z + "] (mode: " + mode + ")..."));
+        com.cleanroommc.worldflow.debug.ChunkDumper.executeDump(world, x, z, mode, sender);
+    }
+
     @Override
     public List<String> getTabCompletions(MinecraftServer server, ICommandSender sender, String[] args, @Nullable BlockPos targetPos) {
         if (args.length == 1) {
-            return getListOfStringsMatchingLastWord(args, "noise", "cascade", "pregen", "pipeline");
+            return getListOfStringsMatchingLastWord(args, "noise", "cascade", "pregen", "pipeline", "dumpchunk");
         }
         if (args.length == 2 && "cascade".equalsIgnoreCase(args[0])) {
             return getListOfStringsMatchingLastWord(args, "status", "info", "flush", "clear", "toggle", "reload");
+        }
+        if (args.length == 4 && "dumpchunk".equalsIgnoreCase(args[0])) {
+            return getListOfStringsMatchingLastWord(args, "inline", "pipeline", "both");
         }
         return Collections.emptyList();
     }

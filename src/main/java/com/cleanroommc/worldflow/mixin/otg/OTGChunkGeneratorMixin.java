@@ -41,14 +41,25 @@ public abstract class OTGChunkGeneratorMixin {
         if (!ModConfig.CONCURRENCY.enableOTGParallelTerrain) {
             return;
         }
+        if (!com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
 
         ChunkCoordinate chunkCoord = ChunkCoordinate.fromChunkCoords(chunkX, chunkZ);
-        Chunk chunk = (Chunk) this.unloadedChunksCache.get(chunkCoord);
+        Chunk chunk;
+        synchronized (this.unloadedChunksCache) {
+            chunk = (Chunk) this.unloadedChunksCache.get(chunkCoord);
+        }
         if (chunk == null) {
             chunk = OTGParallelContext.generateOTGChunk(this.world, chunkX, chunkZ);
             if (chunk != null && !provideChunk) {
-                this.unloadedChunksCache.put(chunkCoord, chunk);
+                synchronized (this.unloadedChunksCache) {
+                    this.unloadedChunksCache.put(chunkCoord, chunk);
+                }
             }
+        } else {
+            OTGParallelContext.fillBiomeArray(this.world, chunk);
+            chunk.generateSkylightMap();
         }
         if (chunk != null) {
             cir.setReturnValue(chunk);

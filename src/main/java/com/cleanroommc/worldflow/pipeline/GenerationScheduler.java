@@ -42,6 +42,8 @@ public class GenerationScheduler {
     private final AtomicLong totalBaseGenCount = new AtomicLong(0);
     private final AtomicLong totalFeaturesNanos = new AtomicLong(0);
     private final AtomicLong totalFeaturesCount = new AtomicLong(0);
+    public final AtomicLong totalChunksPipeline = new AtomicLong(0);
+    public final AtomicLong totalChunksInline = new AtomicLong(0);
 
     public static GenerationScheduler getInstance() {
         return INSTANCE;
@@ -395,28 +397,35 @@ public class GenerationScheduler {
         long totalPublished = PublishManager.INSTANCE.totalChunksPublished.get();
         long baseCount = this.totalBaseGenCount.get();
         long featCount = this.totalFeaturesCount.get();
+        long pipeCount = this.totalChunksPipeline.get();
+        long inlineCount = this.totalChunksInline.get();
 
-        if (totalPublished == 0 && baseCount == 0 && featCount == 0) {
+        if (totalPublished == 0 && baseCount == 0 && featCount == 0 && pipeCount == 0 && inlineCount == 0 && this.inFlight.isEmpty()) {
             return;
         }
 
         double elapsedSec = Math.max(1.0, (now - this.pipelineStartTimeMs) / 1000.0);
-        double chunksPerSec = totalPublished / elapsedSec;
+        long totalGen = totalPublished + inlineCount;
+        double chunksPerSec = totalGen / elapsedSec;
         double chunksPerMin = chunksPerSec * 60.0;
 
         double avgBaseMs = baseCount > 0 ? (this.totalBaseGenNanos.get() / 1_000_000.0) / baseCount : 0.0;
         double avgFeatMs = featCount > 0 ? (this.totalFeaturesNanos.get() / 1_000_000.0) / featCount : 0.0;
+        int queueDepth = PublishManager.INSTANCE.getPendingCount();
 
         WorldFlow.LOGGER.info(String.format(
-                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | In-Flight: %d | Parallel: %d | Serialized: %d | Active Workers: %d",
+                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | Serialized: %d | Parallel: %d | Active Workers: %d",
                 chunksPerSec,
                 chunksPerMin,
                 totalPublished,
+                pipeCount,
+                inlineCount,
+                queueDepth,
+                this.inFlight.size(),
                 avgBaseMs,
                 avgFeatMs,
-                this.inFlight.size(),
-                this.parallelCount.get(),
                 this.serializedCount.get(),
+                this.parallelCount.get(),
                 GenerationWorkerPool.getInstance().getActiveWorkerCount()
         ));
     }

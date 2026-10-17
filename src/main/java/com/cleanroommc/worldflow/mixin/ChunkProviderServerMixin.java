@@ -88,4 +88,16 @@ public abstract class ChunkProviderServerMixin {
         // Returning here without calling cir.setReturnValue allows ChunkProviderServer.provideChunk
         // to execute its vanilla inline generation & population.
     }
+
+    @Inject(method = "provideChunk(II)Lnet/minecraft/world/chunk/Chunk;", at = @At("RETURN"))
+    private void worldflow$afterProvideChunk(int x, int z, CallbackInfoReturnable<Chunk> cir) {
+        Chunk chunk = cir.getReturnValue();
+        if (chunk instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) {
+            com.cleanroommc.worldflow.pipeline.IWorldFlowChunk wfChunk = (com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) chunk;
+            if (wfChunk.worldflow$getGenPath() == com.cleanroommc.worldflow.pipeline.IWorldFlowChunk.GenPath.UNKNOWN) {
+                wfChunk.worldflow$setGenPath(com.cleanroommc.worldflow.pipeline.IWorldFlowChunk.GenPath.INLINE);
+                GenerationScheduler.getInstance().totalChunksInline.incrementAndGet();
+            }
+        }
+    }
 }

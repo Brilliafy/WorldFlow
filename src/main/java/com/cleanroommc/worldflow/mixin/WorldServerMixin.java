@@ -15,5 +15,6 @@ public abstract class WorldServerMixin {
         WorldServer world = (WorldServer) (Object) this;
         // Process chunks completed by parallel worker pipeline and publish to live world
         PublishManager.INSTANCE.tick(world, 32);
+        com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().checkLogMetrics();
     }
 }
