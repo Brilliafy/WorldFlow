@@ -211,11 +211,39 @@ public class CascadeBlockBuffer {
         }
     }
 
+    public void flushStagedTicksForLoadedChunks(WorldServer world) {
+        if (world == null) return;
+        int dim = world.provider.getDimension();
+        Map<ChunkPos, List<StagedTick>> tickDimMap = this.stagedTicks.get(dim);
+        if (tickDimMap == null || tickDimMap.isEmpty()) return;
+
+        Iterator<Map.Entry<ChunkPos, List<StagedTick>>> it = tickDimMap.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<ChunkPos, List<StagedTick>> entry = it.next();
+            ChunkPos pos = entry.getKey();
+            if (world.getChunkProvider().getLoadedChunk(pos.x, pos.z) != null) {
+                it.remove();
+                List<StagedTick> ticks = entry.getValue();
+                if (ticks != null) {
+                    for (StagedTick t : ticks) {
+                        try {
+                            world.scheduleBlockUpdate(t.pos, t.block, t.delay, t.priority);
+                        } catch (Throwable ex) {
+                            WorldFlow.LOGGER.debug("[WorldFlow] Error applying staged tick in loaded chunk [{}, {}]", pos.x, pos.z, ex);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     public int flushAll(WorldServer world) {
         if (world == null) return 0;
         int dim = world.provider.getDimension();
         Map<ChunkPos, List<StagedBlock>> dimMap = memoryStaging.get(dim);
         if (dimMap == null || dimMap.isEmpty()) {
+            flushStagedTicksForLoadedChunks(world);
+            flushStagedEntitiesForLoadedChunks(world);
             return 0;
         }
         int totalFlushed = 0;
@@ -225,6 +253,7 @@ public class CascadeBlockBuffer {
                 totalFlushed += flushChunk(world, loaded);
             }
         }
+        flushStagedTicksForLoadedChunks(world);
         flushStagedEntitiesForLoadedChunks(world);
         return totalFlushed;
     }

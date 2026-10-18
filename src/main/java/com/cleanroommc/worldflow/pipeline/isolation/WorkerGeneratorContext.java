@@ -21,6 +21,11 @@ import net.minecraft.world.gen.structure.StructureOceanMonument;
 import net.minecraft.world.gen.structure.WoodlandMansion;
 
 import com.pg85.otg.forge.world.ForgeWorld;
+import net.minecraft.world.gen.NoiseGeneratorOctaves;
+import net.minecraft.world.gen.NoiseGeneratorPerlin;
+import net.minecraft.world.gen.NoiseGeneratorSimplex;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.terraingen.InitNoiseGensEvent;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -104,8 +109,42 @@ public class WorkerGeneratorContext {
 
         if (gen != null) {
             this.chunkGenerators.put(dim, gen);
+            fireInitNoiseGensEvent(world, gen);
         }
         return gen;
+    }
+
+    public static void fireInitNoiseGensEvent(World world, IChunkGenerator gen) {
+        try {
+            if (world == null) {
+                return;
+            }
+            Random r = new Random(world.getSeed());
+            NoiseGeneratorOctaves lperlin1 = new NoiseGeneratorOctaves(r, 16);
+            NoiseGeneratorOctaves lperlin2 = new NoiseGeneratorOctaves(r, 16);
+            NoiseGeneratorOctaves perlin = new NoiseGeneratorOctaves(r, 8);
+            NoiseGeneratorOctaves scale = new NoiseGeneratorOctaves(r, 10);
+            NoiseGeneratorOctaves depth = new NoiseGeneratorOctaves(r, 16);
+
+            InitNoiseGensEvent.Context ctx;
+            if (world.provider instanceof WorldProviderHell) {
+                NoiseGeneratorOctaves perlin2 = new NoiseGeneratorOctaves(r, 10);
+                NoiseGeneratorOctaves perlin3 = new NoiseGeneratorOctaves(r, 16);
+                ctx = new InitNoiseGensEvent.ContextHell(lperlin1, lperlin2, perlin, perlin2, perlin3, scale, depth);
+            } else if (world.provider instanceof WorldProviderEnd) {
+                NoiseGeneratorSimplex island = new NoiseGeneratorSimplex(r);
+                ctx = new InitNoiseGensEvent.ContextEnd(lperlin1, lperlin2, perlin, scale, depth, island);
+            } else {
+                NoiseGeneratorPerlin height = new NoiseGeneratorPerlin(r, 4);
+                NoiseGeneratorOctaves forest = new NoiseGeneratorOctaves(r, 8);
+                ctx = new InitNoiseGensEvent.ContextOverworld(lperlin1, lperlin2, perlin, height, scale, depth, forest);
+            }
+
+            InitNoiseGensEvent<?> event = new InitNoiseGensEvent<>(world, r, ctx);
+            MinecraftForge.TERRAIN_GEN_BUS.post(event);
+        } catch (Throwable t) {
+            WorldFlow.LOGGER.debug("[WorldFlow] Handled exception firing InitNoiseGensEvent", t);
+        }
     }
 
     public MapGenBase getWorkerCavesGen(ForgeWorld forgeWorld, MapGenBase mainCaves) {

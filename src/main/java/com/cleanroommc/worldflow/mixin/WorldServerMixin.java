@@ -50,8 +50,31 @@ public abstract class WorldServerMixin {
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$onScheduleBlockUpdate(BlockPos pos, Block blockIn, int delay, int priority, CallbackInfo ci) {
-        if (ThreadLocalWorldView.isGenerating()) {
-            CascadeBlockBuffer.INSTANCE.stageTickUpdate((WorldServer) (Object) this, pos, blockIn, delay, priority);
+        WorldServer world = (WorldServer) (Object) this;
+        if ((world.getMinecraftServer() != null && !world.getMinecraftServer().isCallingFromMinecraftThread()) || ThreadLocalWorldView.isGenerating()) {
+            CascadeBlockBuffer.INSTANCE.stageTickUpdate(world, pos, blockIn, delay, priority);
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "updateBlockTick(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/Block;II)V",
+            at = @At("HEAD"),
+            cancellable = true)
+    private void worldflow$onUpdateBlockTick(BlockPos pos, Block blockIn, int delay, int priority, CallbackInfo ci) {
+        WorldServer world = (WorldServer) (Object) this;
+        if ((world.getMinecraftServer() != null && !world.getMinecraftServer().isCallingFromMinecraftThread()) || ThreadLocalWorldView.isGenerating()) {
+            CascadeBlockBuffer.INSTANCE.stageTickUpdate(world, pos, blockIn, delay, priority);
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "scheduleUpdate(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/Block;I)V",
+            at = @At("HEAD"),
+            cancellable = true)
+    private void worldflow$onScheduleUpdate(BlockPos pos, Block blockIn, int delay, CallbackInfo ci) {
+        WorldServer world = (WorldServer) (Object) this;
+        if ((world.getMinecraftServer() != null && !world.getMinecraftServer().isCallingFromMinecraftThread()) || ThreadLocalWorldView.isGenerating()) {
+            CascadeBlockBuffer.INSTANCE.stageTickUpdate(world, pos, blockIn, delay, 0);
             ci.cancel();
         }
     }
@@ -88,16 +111,81 @@ public abstract class WorldServerMixin {
         }
     }
 
-    @Inject(method = "tickUpdates(Z)Z", at = @At("HEAD"))
+    @Inject(method = "tickUpdates(Z)Z", at = @At("HEAD"), cancellable = true)
     private void worldflow$onTickUpdatesHead(boolean runAllPending, CallbackInfoReturnable<Boolean> cir) {
+        WorldServer world = (WorldServer) (Object) this;
+        if (world.getWorldInfo().getTerrainType() == net.minecraft.world.WorldType.DEBUG_ALL_BLOCK_STATES) {
+            cir.setReturnValue(false);
+            return;
+        }
+
         synchronized (this.pendingTickListEntriesTreeSet) {
-            if (this.pendingTickListEntriesTreeSet.size() != this.pendingTickListEntriesHashSet.size()) {
+            if (this.pendingTickListEntriesTreeSet.isEmpty() && !this.pendingTickListEntriesHashSet.isEmpty()) {
+                WorldFlow.LOGGER.warn("[WorldFlow] Resynchronizing pending tick list: TreeSet was empty but HashSet had {} entries",
+                        this.pendingTickListEntriesHashSet.size());
+                this.pendingTickListEntriesTreeSet.addAll(this.pendingTickListEntriesHashSet);
+            } else if (!this.pendingTickListEntriesTreeSet.isEmpty() && this.pendingTickListEntriesHashSet.isEmpty()) {
+                WorldFlow.LOGGER.warn("[WorldFlow] Resynchronizing pending tick list: HashSet was empty but TreeSet had {} entries",
+                        this.pendingTickListEntriesTreeSet.size());
+                this.pendingTickListEntriesHashSet.addAll(this.pendingTickListEntriesTreeSet);
+            } else if (this.pendingTickListEntriesTreeSet.size() != this.pendingTickListEntriesHashSet.size()) {
                 WorldFlow.LOGGER.warn("[WorldFlow] Resynchronizing pending tick list: TreeSet={} vs HashSet={}",
                         this.pendingTickListEntriesTreeSet.size(), this.pendingTickListEntriesHashSet.size());
                 this.pendingTickListEntriesHashSet.clear();
                 this.pendingTickListEntriesHashSet.addAll(this.pendingTickListEntriesTreeSet);
             }
+
+            int count = this.pendingTickListEntriesTreeSet.size();
+            if (count > 65536) {
+                count = 65536;
+            }
+
+            world.profiler.startSection("cleaning");
+
+            for (int j = 0; j < count; ++j) {
+                if (this.pendingTickListEntriesTreeSet.isEmpty()) {
+                    break;
+                }
+                NextTickListEntry entry = this.pendingTickListEntriesTreeSet.first();
+                if (!runAllPending && entry.scheduledTime > world.getWorldInfo().getWorldTotalTime()) {
+                    break;
+                }
+
+                this.pendingTickListEntriesTreeSet.remove(entry);
+                this.pendingTickListEntriesHashSet.remove(entry);
+                this.pendingTickListEntriesThisTick.add(entry);
+            }
+
+            world.profiler.endSection();
         }
+
+        world.profiler.startSection("ticking");
+        Iterator<NextTickListEntry> iterator = this.pendingTickListEntriesThisTick.iterator();
+
+        while (iterator.hasNext()) {
+            NextTickListEntry entry = iterator.next();
+            iterator.remove();
+
+            if (world.isBlockLoaded(entry.position)) {
+                net.minecraft.block.state.IBlockState state = world.getBlockState(entry.position);
+                if (state.getMaterial() != net.minecraft.block.material.Material.AIR && Block.isEqualTo(state.getBlock(), entry.getBlock())) {
+                    try {
+                        state.getBlock().updateTick(world, entry.position, state, world.rand);
+                    } catch (Throwable throwable) {
+                        net.minecraft.crash.CrashReport report = net.minecraft.crash.CrashReport.makeCrashReport(throwable, "Exception while ticking a block");
+                        net.minecraft.crash.CrashReportCategory category = report.makeCategory("Block being ticked");
+                        net.minecraft.crash.CrashReportCategory.addBlockInfo(category, entry.position, state);
+                        throw new net.minecraft.util.ReportedException(report);
+                    }
+                }
+            } else {
+                world.scheduleUpdate(entry.position, entry.getBlock(), 0);
+            }
+        }
+
+        world.profiler.endSection();
+        this.pendingTickListEntriesThisTick.clear();
+        cir.setReturnValue(!this.pendingTickListEntriesTreeSet.isEmpty());
     }
 
     @Inject(method = "onEntityAdded", at = @At("HEAD"), cancellable = true)

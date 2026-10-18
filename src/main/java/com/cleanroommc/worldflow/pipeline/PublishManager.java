@@ -61,6 +61,9 @@ public class PublishManager {
             publishedCount++;
         }
 
+        CascadeBlockBuffer.INSTANCE.flushStagedTicksForLoadedChunks(world);
+        CascadeBlockBuffer.INSTANCE.flushStagedEntitiesForLoadedChunks(world);
+
         return publishedCount;
     }
 
