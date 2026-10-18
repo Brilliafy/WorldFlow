@@ -53,14 +53,10 @@ public abstract class ForgeWorldMixin {
     @Shadow
     public abstract ForgeBiome getBiomeByOTGIdOrNull(int id);
 
-    private static class PopulationBiomeCache {
-        ChunkCoordinate chunkCoord;
-        final LocalBiome[][] biomes = new LocalBiome[32][32];
-        boolean valid = false;
+    public static class PopulationBiomeCache {
+        public PopulationBiomeCache() {
+        }
     }
-
-    private static final ThreadLocal<PopulationBiomeCache> THREAD_LOCAL_POPULATION_CACHE =
-            ThreadLocal.withInitial(PopulationBiomeCache::new);
 
     private LocalBiome worldflow$getFallbackBiome(ForgeWorld self) {
         if (self == null) return null;
@@ -131,7 +127,8 @@ public abstract class ForgeWorldMixin {
             return;
         }
         ForgeWorld self = (ForgeWorld) (Object) this;
-        PopulationBiomeCache cache = THREAD_LOCAL_POPULATION_CACHE.get();
+        com.cleanroommc.worldflow.pipeline.isolation.PopulationBiomeCache cache =
+                com.cleanroommc.worldflow.pipeline.isolation.PopulationBiomeCache.get();
         cache.chunkCoord = chunkCoord;
         int startX = chunkCoord.getBlockX();
         int startZ = chunkCoord.getBlockZ();
@@ -150,7 +147,7 @@ public abstract class ForgeWorldMixin {
 
     @Inject(method = "invalidatePopulationBiomeCache", at = @At("HEAD"), cancellable = true, remap = false)
     private void worldflow$onInvalidatePopulationBiomeCache(CallbackInfo ci) {
-        THREAD_LOCAL_POPULATION_CACHE.get().valid = false;
+        com.cleanroommc.worldflow.pipeline.isolation.PopulationBiomeCache.get().invalidate();
         ci.cancel();
     }
 
@@ -158,7 +155,8 @@ public abstract class ForgeWorldMixin {
     private void worldflow$onGetBiomeForPopulation(int worldX, int worldZ, ChunkCoordinate chunkBeingPopulated, CallbackInfoReturnable<LocalBiome> cir) {
         ForgeWorld self = (ForgeWorld) (Object) this;
         if (chunkBeingPopulated != null) {
-            PopulationBiomeCache cache = THREAD_LOCAL_POPULATION_CACHE.get();
+            com.cleanroommc.worldflow.pipeline.isolation.PopulationBiomeCache cache =
+                    com.cleanroommc.worldflow.pipeline.isolation.PopulationBiomeCache.get();
             if (cache.valid && cache.chunkCoord != null && cache.chunkCoord.equals(chunkBeingPopulated)) {
                 int dx = worldX - chunkBeingPopulated.getBlockX();
                 int dz = worldZ - chunkBeingPopulated.getBlockZ();
