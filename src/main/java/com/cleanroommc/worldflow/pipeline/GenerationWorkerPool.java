@@ -24,6 +24,11 @@ public class GenerationWorkerPool {
     private ScheduledExecutorService scheduler;
     private boolean initialized = false;
 
+    private final AtomicInteger baseGenHighCount = new AtomicInteger(0);
+    private final AtomicInteger baseGenEmptyCount = new AtomicInteger(0);
+    private final AtomicInteger featuresHighCount = new AtomicInteger(0);
+    private final AtomicInteger featuresEmptyCount = new AtomicInteger(0);
+
     public static class PrioritizedTask implements Runnable, Comparable<PrioritizedTask> {
         private final Runnable task;
         private final int priority;
@@ -67,7 +72,10 @@ public class GenerationWorkerPool {
             return;
         }
 
-        int targetThreads = effectiveThreads();
+        int maxTotal = getMaxTotalWorkers();
+        int initialBase = Math.max(1, Math.min(2, maxTotal / 2));
+        int initialFeat = Math.max(1, Math.min(2, maxTotal / 2));
+
         AtomicInteger baseGenThreadId = new AtomicInteger(1);
         AtomicInteger featuresThreadId = new AtomicInteger(1);
 
@@ -84,8 +92,8 @@ public class GenerationWorkerPool {
         };
 
         this.baseGenPool = new ThreadPoolExecutor(
-                targetThreads,
-                targetThreads,
+                initialBase,
+                maxTotal,
                 60L, TimeUnit.SECONDS,
                 new PriorityBlockingQueue<>(1024, taskComparator),
                 r -> {
@@ -99,8 +107,8 @@ public class GenerationWorkerPool {
         this.baseGenPool.allowCoreThreadTimeOut(true);
 
         this.featuresPool = new ThreadPoolExecutor(
-                targetThreads,
-                targetThreads,
+                initialFeat,
+                maxTotal,
                 60L, TimeUnit.SECONDS,
                 new PriorityBlockingQueue<>(1024, taskComparator),
                 r -> {
@@ -127,19 +135,119 @@ public class GenerationWorkerPool {
             return t;
         });
 
+        // Start autoscaler periodic tick (every 1 second)
+        this.scheduler.scheduleWithFixedDelay(this::tickAutoscaler, 1, 1, TimeUnit.SECONDS);
+
         this.initialized = true;
-        WorldFlow.LOGGER.info("[WorldFlow] Generation worker pools initialized: {} BaseGen + {} Features workers, 1 gen-lever, 1 scheduler.", targetThreads, targetThreads);
+        WorldFlow.LOGGER.info("[WorldFlow] Generation worker pools initialized: {} BaseGen + {} Features workers (max total {}), 1 gen-lever, 1 scheduler.",
+                initialBase, initialFeat, maxTotal);
+    }
+
+    public static int detectPhysicalCores() {
+        int logical = Runtime.getRuntime().availableProcessors();
+        try {
+            java.io.File cpuinfo = new java.io.File("/proc/cpuinfo");
+            if (cpuinfo.exists()) {
+                java.util.Set<String> coreIds = new java.util.HashSet<>();
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.FileReader(cpuinfo))) {
+                    String line;
+                    String physicalId = "0";
+                    while ((line = reader.readLine()) != null) {
+                        line = line.trim();
+                        if (line.startsWith("physical id")) {
+                            physicalId = line.substring(line.indexOf(':') + 1).trim();
+                        } else if (line.startsWith("core id")) {
+                            String coreId = line.substring(line.indexOf(':') + 1).trim();
+                            coreIds.add(physicalId + ":" + coreId);
+                        }
+                    }
+                }
+                if (!coreIds.isEmpty()) {
+                    return Math.max(1, coreIds.size());
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return logical <= 2 ? 1 : Math.max(2, logical / 2);
+    }
+
+    public static int getMaxTotalWorkers() {
+        if (ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.parallelWorkerThreads > 0) {
+            return ModConfig.CONCURRENCY.parallelWorkerThreads;
+        }
+        return Math.min(6, detectPhysicalCores() + 2);
     }
 
     public static int effectiveThreads() {
-        if (ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.parallelWorkerThreads > 0) {
-            return Math.max(1, ModConfig.CONCURRENCY.parallelWorkerThreads);
+        return getMaxTotalWorkers();
+    }
+
+    private void tickAutoscaler() {
+        if (!this.initialized || this.baseGenPool == null || this.featuresPool == null) {
+            return;
         }
-        int cores = Runtime.getRuntime().availableProcessors();
-        if (cores <= 2) {
-            return 1;
+
+        int currentBase = this.baseGenPool.getCorePoolSize();
+        int currentFeat = this.featuresPool.getCorePoolSize();
+        int baseQueue = this.baseGenPool.getQueue().size();
+        int featQueue = this.featuresPool.getQueue().size();
+
+        int maxTotal = getMaxTotalWorkers();
+
+        // Scaling BaseGen:
+        if (baseQueue > 2 * currentBase) {
+            this.baseGenEmptyCount.set(0);
+            if (this.baseGenHighCount.incrementAndGet() >= 2) {
+                this.baseGenHighCount.set(0);
+                if (currentBase + currentFeat < maxTotal && currentBase < 4) {
+                    int next = currentBase + 1;
+                    resizePool(this.baseGenPool, next);
+                    WorldFlow.LOGGER.info("[WorldFlow Autoscaler] Scaled BaseGen pool: {} -> {} (queue: {})", currentBase, next, baseQueue);
+                }
+            }
+        } else if (baseQueue == 0) {
+            this.baseGenHighCount.set(0);
+            if (this.baseGenEmptyCount.incrementAndGet() >= 5) {
+                this.baseGenEmptyCount.set(0);
+                if (currentBase > 1) {
+                    int next = currentBase - 1;
+                    resizePool(this.baseGenPool, next);
+                    WorldFlow.LOGGER.info("[WorldFlow Autoscaler] Scaled BaseGen pool: {} -> {} (idle)", currentBase, next);
+                }
+            }
+        } else {
+            this.baseGenHighCount.set(0);
+            this.baseGenEmptyCount.set(0);
         }
-        return Math.min(8, Math.max(1, cores - 1));
+
+        // Re-read currentBase for features scaling check
+        currentBase = this.baseGenPool.getCorePoolSize();
+
+        // Scaling Features:
+        if (featQueue > 2 * currentFeat) {
+            this.featuresEmptyCount.set(0);
+            if (this.featuresHighCount.incrementAndGet() >= 2) {
+                this.featuresHighCount.set(0);
+                if (currentBase + currentFeat < maxTotal && currentFeat < 4) {
+                    int next = currentFeat + 1;
+                    resizePool(this.featuresPool, next);
+                    WorldFlow.LOGGER.info("[WorldFlow Autoscaler] Scaled Features pool: {} -> {} (queue: {})", currentFeat, next, featQueue);
+                }
+            }
+        } else if (featQueue == 0) {
+            this.featuresHighCount.set(0);
+            if (this.featuresEmptyCount.incrementAndGet() >= 5) {
+                this.featuresEmptyCount.set(0);
+                if (currentFeat > 1) {
+                    int next = currentFeat - 1;
+                    resizePool(this.featuresPool, next);
+                    WorldFlow.LOGGER.info("[WorldFlow Autoscaler] Scaled Features pool: {} -> {} (idle)", currentFeat, next);
+                }
+            }
+        } else {
+            this.featuresHighCount.set(0);
+            this.featuresEmptyCount.set(0);
+        }
     }
 
     public synchronized void setWorkerThreads(int count) {
@@ -147,12 +255,14 @@ public class GenerationWorkerPool {
             init();
         }
         int target = Math.max(1, count);
-        resizePool(this.baseGenPool, target);
-        resizePool(this.featuresPool, target);
+        int half = Math.max(1, target / 2);
+        resizePool(this.baseGenPool, half);
+        resizePool(this.featuresPool, target - half > 0 ? target - half : 1);
         if (ModConfig.CONCURRENCY != null) {
             ModConfig.CONCURRENCY.parallelWorkerThreads = target;
         }
-        WorldFlow.LOGGER.info("[WorldFlow] Resized generation worker pools to {} BaseGen and {} Features threads.", target, target);
+        WorldFlow.LOGGER.info("[WorldFlow] Resized generation worker pools to {} BaseGen and {} Features threads.",
+                this.baseGenPool.getCorePoolSize(), this.featuresPool.getCorePoolSize());
     }
 
     private void resizePool(ThreadPoolExecutor pool, int target) {
@@ -165,6 +275,14 @@ public class GenerationWorkerPool {
                 pool.setMaximumPoolSize(target);
             }
         }
+    }
+
+    public int getBaseGenWorkerCount() {
+        return this.baseGenPool != null ? this.baseGenPool.getCorePoolSize() : 0;
+    }
+
+    public int getFeaturesWorkerCount() {
+        return this.featuresPool != null ? this.featuresPool.getCorePoolSize() : 0;
     }
 
     public void executeBaseGen(Runnable command) {

@@ -77,6 +77,10 @@ public class StatusHolder implements Comparable<StatusHolder> {
         return this.workerDoneFuture.isDone();
     }
 
+    public boolean isCarversDone() {
+        return this.carversFuture.isDone();
+    }
+
     public GenerationPriority getInitialPriority() {
         return this.initialPriority;
     }
@@ -158,6 +162,10 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     public boolean isPublishEnqueued() {
         return this.publishEnqueued.get();
+    }
+
+    public void resetPublishEnqueued() {
+        this.publishEnqueued.set(false);
     }
 
     public String getLastWorkerName() {

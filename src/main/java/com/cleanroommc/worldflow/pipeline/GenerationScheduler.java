@@ -47,6 +47,7 @@ public class GenerationScheduler {
     private final Map<Long, ProtoChunk> carverCache = new ConcurrentHashMap<>();
     private final Map<IWorldGenerator, ReentrantLock> generatorLocks = new ConcurrentHashMap<>();
     private static final ThreadLocal<Boolean> IS_DECORATING = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private final AtomicBoolean dirtyPublishSweep = new AtomicBoolean(false);
 
     public final AtomicLong totalGenerationsRequested = new AtomicLong(0);
     private final long pipelineStartTimeMs = System.currentTimeMillis();
@@ -158,20 +159,42 @@ public class GenerationScheduler {
         if (holder == null) return;
         holder.setOwnDecorationDone(true);
         if (canPublish(holder)) {
-            if (holder.markPublishEnqueued()) {
+            WorldServer world = holder.getWorld();
+            if (world != null && world.isCallingFromMinecraftThread()) {
+                PublishManager.INSTANCE.publishChunk(world, holder);
+            } else if (holder.markPublishEnqueued()) {
                 PublishManager.INSTANCE.enqueueReady(holder);
             }
         }
         notifyNeighboursOfCompletion(holder.getPos().x, holder.getPos().z);
-        sweepPublishable();
+    }
+
+    public void markPublishDirty() {
+        this.dirtyPublishSweep.set(true);
+    }
+
+    public void sweepPublishableIfDirty() {
+        if (this.dirtyPublishSweep.compareAndSet(true, false)) {
+            sweepPublishable();
+        }
     }
 
     public void sweepPublishable() {
         for (StatusHolder holder : this.inFlight.values()) {
             if (holder.isOwnDecorationDone() && !holder.isDone()) {
                 if (canPublish(holder)) {
-                    if (holder.markPublishEnqueued()) {
-                        PublishManager.INSTANCE.enqueueReady(holder);
+                    WorldServer world = holder.getWorld();
+                    if (world != null && world.isCallingFromMinecraftThread()) {
+                        PublishManager.INSTANCE.publishChunk(world, holder);
+                    } else {
+                        if (holder.markPublishEnqueued()) {
+                            PublishManager.INSTANCE.enqueueReady(holder);
+                        } else {
+                            long ageMs = (System.nanoTime() - holder.getSubmissionTimeNanos()) / 1_000_000L;
+                            if (ageMs > 2000L && !PublishManager.INSTANCE.isPending(holder)) {
+                                PublishManager.INSTANCE.enqueueReady(holder);
+                            }
+                        }
                     }
                 }
             }
@@ -217,13 +240,79 @@ public class GenerationScheduler {
                 StatusHolder nHolder = this.inFlight.get(nKey);
                 if (nHolder != null && nHolder.isOwnDecorationDone() && !nHolder.isDone()) {
                     if (canPublish(nHolder)) {
-                        if (nHolder.markPublishEnqueued()) {
-                            PublishManager.INSTANCE.enqueueReady(nHolder);
+                        WorldServer world = nHolder.getWorld();
+                        if (world != null && world.isCallingFromMinecraftThread()) {
+                            PublishManager.INSTANCE.publishChunk(world, nHolder);
+                        } else {
+                            if (nHolder.markPublishEnqueued()) {
+                                PublishManager.INSTANCE.enqueueReady(nHolder);
+                            } else {
+                                long ageMs = (System.nanoTime() - nHolder.getSubmissionTimeNanos()) / 1_000_000L;
+                                if (ageMs > 2000L && !PublishManager.INSTANCE.isPending(nHolder)) {
+                                    PublishManager.INSTANCE.enqueueReady(nHolder);
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        markPublishDirty();
+    }
+
+    public void notifyNeighboursOfCarverReadiness(int cx, int cz) {
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                long nKey = ChunkPos.asLong(cx + dx, cz + dz);
+                StatusHolder nHolder = this.inFlight.get(nKey);
+                if (nHolder != null && nHolder.getCurrentStatus() == ChunkStatus.CARVERS
+                        && nHolder.isCarversDone() && !nHolder.isWorkerDone() && !nHolder.isDone()) {
+                    checkAndTriggerFeaturesIfReady(nHolder);
+                }
+            }
+        }
+    }
+
+    private void checkAndTriggerFeaturesIfReady(StatusHolder holder) {
+        if (holder == null || holder.isDone() || holder.isWorkerDone()) {
+            return;
+        }
+        WorldServer world = holder.getWorld();
+        int cx = holder.getPos().x;
+        int cz = holder.getPos().z;
+
+        Map<Long, ProtoChunk> neighbourhood = new HashMap<>();
+        neighbourhood.put(holder.getChunkKey(), holder.getProtoChunk());
+
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                int nx = cx + dx;
+                int nz = cz + dz;
+                long nKey = ChunkPos.asLong(nx, nz);
+
+                Chunk loaded = world.getChunkProvider().getLoadedChunk(nx, nz);
+                if (loaded != null) {
+                    continue;
+                }
+                ProtoChunk cached = this.carverCache.get(nKey);
+                if (cached != null) {
+                    neighbourhood.put(nKey, cached);
+                    continue;
+                }
+                StatusHolder nHolder = this.inFlight.get(nKey);
+                if (nHolder != null && nHolder.getCurrentStatus().isAtLeast(ChunkStatus.CARVERS)) {
+                    neighbourhood.put(nKey, nHolder.getProtoChunk());
+                    continue;
+                }
+                // At least one neighbour is not yet at CARVERS
+                return;
+            }
+        }
+
+        // All 3x3 neighbours are ready at CARVERS! Advance immediately to features
+        GenerationWorkerPool.getInstance().executeFeatures(holder, () -> executeFeatures(holder, neighbourhood));
     }
 
     private GenerationScheduler() {
@@ -447,6 +536,9 @@ public class GenerationScheduler {
         // Cache completed CARVERS ProtoChunk for fast neighbour reuse
         putCarverCache(holder.getChunkKey(), proto);
 
+        // Notify neighbours that this chunk has reached CARVERS
+        notifyNeighboursOfCarverReadiness(pos.x, pos.z);
+
         // If target was only CARVERS (e.g. neighbour dependency), complete future and remove from inFlight!
         if (holder.getTargetStatus() == ChunkStatus.CARVERS) {
             holder.getFuture().complete(proto.getChunk());
@@ -522,9 +614,9 @@ public class GenerationScheduler {
         if (allReady) {
             GenerationWorkerPool.getInstance().executeFeatures(holder, () -> executeFeatures(holder, neighbourhood));
         } else {
-            // Wait for all missing neighbours to reach CARVERS with a 15-second safety timeout
+            // Wait for all missing neighbours to reach CARVERS with a 3-second safety timeout
             CompletableFuture<?> allFutures = CompletableFuture.allOf(neighbourFutures.toArray(new CompletableFuture[0]));
-            GenerationWorkerPool.getInstance().scheduleTimeout(allFutures, 15, TimeUnit.SECONDS);
+            GenerationWorkerPool.getInstance().scheduleTimeout(allFutures, 3, TimeUnit.SECONDS);
 
             allFutures.whenCompleteAsync((v, ex) -> {
                 if (ex != null) {
@@ -831,11 +923,24 @@ public class GenerationScheduler {
                         ));
                         if (h.isOwnDecorationDone()) {
                             if (canPublish(h)) {
-                                if (h.markPublishEnqueued()) {
-                                    PublishManager.INSTANCE.enqueueReady(h);
+                                WorldServer world = h.getWorld();
+                                if (world != null && world.isCallingFromMinecraftThread()) {
+                                    PublishManager.INSTANCE.publishChunk(world, h);
+                                } else {
+                                    if (h.markPublishEnqueued()) {
+                                        PublishManager.INSTANCE.enqueueReady(h);
+                                    } else if (!PublishManager.INSTANCE.isPending(h)) {
+                                        PublishManager.INSTANCE.enqueueReady(h);
+                                    }
                                 }
                             }
-                        } else if (activeWorkers == 0 && queueSize == 0) {
+                        } else if (h.getCurrentStatus() == ChunkStatus.CARVERS && h.isCarversDone() && !h.isWorkerDone()) {
+                            WorldFlow.LOGGER.warn(String.format(
+                                    "[WorldFlow StallDetector] Requeueing CARVERS orphan chunk [%d,%d] (age=%dms, worker=%s)",
+                                    h.getPos().x, h.getPos().z, ageMs, h.getLastWorkerName()
+                            ));
+                            requeueOrphaned(h);
+                        } else {
                             requeueOrphaned(h);
                         }
                     }
@@ -909,7 +1014,7 @@ public class GenerationScheduler {
         int queueDepth = PublishManager.INSTANCE.getPendingCount();
 
         WorldFlow.LOGGER.info(String.format(
-                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | Serialized: %d | Parallel: %d | Guards blocked: %d | Active Workers: %d",
+                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | Serialized: %d | Parallel: %d | Guards blocked: %d | Workers: base=%d feat=%d (auto)",
                 chunksPerSec,
                 chunksPerMin,
                 totalPublished,
@@ -922,7 +1027,8 @@ public class GenerationScheduler {
                 this.serializedCount.get(),
                 this.parallelCount.get(),
                 this.guardsBlockedCount.get(),
-                GenerationWorkerPool.getInstance().getActiveWorkerCount()
+                GenerationWorkerPool.getInstance().getBaseGenWorkerCount(),
+                GenerationWorkerPool.getInstance().getFeaturesWorkerCount()
         ));
     }
 
@@ -1062,7 +1168,7 @@ public class GenerationScheduler {
                     } catch (Throwable ignored) {
                         Chunk chunk = holder.getProtoChunk().getChunk();
                         if (chunk != null) {
-                            PublishManager.INSTANCE.publishChunk(world, holder);
+                            world.addScheduledTask(() -> PublishManager.INSTANCE.publishChunk(world, holder));
                         }
                     }
                 }

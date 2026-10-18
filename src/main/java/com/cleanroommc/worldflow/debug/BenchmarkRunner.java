@@ -20,6 +20,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
@@ -63,33 +64,13 @@ public class BenchmarkRunner {
                 Map<String, Long> startGenCounts = GenerationScheduler.getInstance().getSerializedGeneratorCountsSnapshot();
 
                 int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
-                List<BenchChunkEntry> entries = new ArrayList<>(totalChunks);
-                for (int dx = -radius; dx <= radius; dx++) {
-                    for (int dz = -radius; dz <= radius; dz++) {
-                        int x = centerX + dx;
-                        int z = centerZ + dz;
-
-                        // Bench backpressure: respect maxInFlight cap
-                        while (GenerationScheduler.getInstance().getInFlightCount() >= maxInFlight) {
-                            try {
-                                Thread.sleep(5);
-                            } catch (InterruptedException ignored) {
-                                break;
-                            }
-                        }
-
-                        CompletableFuture<Chunk> future = GenerationScheduler.getInstance().requestChunk(
-                                world, x, z, ChunkStatus.FULL, GenerationPriority.PLAYER
-                        );
-                        entries.add(new BenchChunkEntry(x, z, future));
-                    }
-                }
+                List<BenchChunkEntry> entries = new CopyOnWriteArrayList<>();
 
                 // Timeout at 3x expected duration (minimum 60s)
                 double expectedSec = Math.max(10.0, totalChunks / 5.0);
                 long timeoutMs = Math.max(60000L, (long) (expectedSec * 3.0 * 1000L));
 
-                // Independent Watchdog Thread: logs stall diagnostics directly via WorldFlow.LOGGER without touching main queue
+                // Independent Watchdog Thread: started BEFORE submission loop so stalls during submission are caught
                 Thread watchdogThread = new Thread(() -> {
                     long stallStartTimeMs = -1L;
                     int lastCompletedCount = 0;
@@ -145,9 +126,7 @@ public class BenchmarkRunner {
                                                     holder.isWorkerDone(), holder.getCarversFuture().isDone(), owedBy
                                             ));
                                             if (ownDone) {
-                                                if (holder.markPublishEnqueued()) {
-                                                    world.addScheduledTask(() -> PublishManager.INSTANCE.publishChunk(world, holder));
-                                                }
+                                                world.addScheduledTask(() -> PublishManager.INSTANCE.publishChunk(world, holder));
                                             } else {
                                                 int active = GenerationWorkerPool.getInstance().getActiveWorkerCount();
                                                 int qSize = GenerationWorkerPool.getInstance().getQueueSize();
@@ -178,6 +157,7 @@ public class BenchmarkRunner {
                         if (now - startTimeMs > timeoutMs) {
                             timedOutFlag.set(true);
                             finished.set(true);
+                            RUNNING.set(false);
                             WorldFlow.LOGGER.error(String.format(
                                     "[WorldFlow Bench] TIMEOUT reached after %.1fs (limit %.1fs, completed %d/%d)! Dumping stuck chunks and reporting partial results:",
                                     (now - startTimeMs) / 1000.0, timeoutMs / 1000.0, completed, totalChunks
@@ -229,6 +209,37 @@ public class BenchmarkRunner {
                 watchdogThread.setDaemon(true);
                 watchdogThread.start();
 
+                // Pipeline chunk submission loop with backpressure and timeout cancellation checks
+                for (int dx = -radius; dx <= radius; dx++) {
+                    for (int dz = -radius; dz <= radius; dz++) {
+                        if (finished.get() || !RUNNING.get()) {
+                            break;
+                        }
+                        int x = centerX + dx;
+                        int z = centerZ + dz;
+
+                        // Bench backpressure: respect maxInFlight cap
+                        while (!finished.get() && RUNNING.get() && GenerationScheduler.getInstance().getInFlightCount() >= maxInFlight) {
+                            try {
+                                Thread.sleep(5);
+                            } catch (InterruptedException ignored) {
+                                break;
+                            }
+                        }
+                        if (finished.get() || !RUNNING.get()) {
+                            break;
+                        }
+
+                        CompletableFuture<Chunk> future = GenerationScheduler.getInstance().requestChunk(
+                                world, x, z, ChunkStatus.FULL, GenerationPriority.PLAYER
+                        );
+                        entries.add(new BenchChunkEntry(x, z, future));
+                    }
+                    if (finished.get() || !RUNNING.get()) {
+                        break;
+                    }
+                }
+
                 // Progress polling loop in benchThread
                 long lastLogMs = System.currentTimeMillis();
 
@@ -252,10 +263,12 @@ public class BenchmarkRunner {
                         double pct = (completed * 100.0) / totalChunks;
                         double currentRate = completed / elapsedSec;
                         send(server, sender, TextFormatting.AQUA + String.format(
-                                "[WorldFlow Bench] Progress: %d/%d (%.1f%%) | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Guards blocked: %d | Elapsed: %.1fs",
+                                "[WorldFlow Bench] Progress: %d/%d (%.1f%%) | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Workers: base=%d feat=%d (auto) | Guards blocked: %d | Elapsed: %.1fs",
                                 completed, totalChunks, pct, currentRate,
                                 GenerationScheduler.getInstance().getInFlightCount(),
                                 GenerationWorkerPool.getInstance().getQueueSize(),
+                                GenerationWorkerPool.getInstance().getBaseGenWorkerCount(),
+                                GenerationWorkerPool.getInstance().getFeaturesWorkerCount(),
                                 GenerationScheduler.getInstance().getGuardsBlockedCount(),
                                 elapsedSec
                         ));
@@ -354,8 +367,11 @@ public class BenchmarkRunner {
         long seed = world.getSeed();
         send(server, sender, TextFormatting.GOLD + (timedOut ? "=== WorldFlow Pipeline Benchmark PARTIAL Results (TIMED OUT) ===" : "=== WorldFlow Pipeline Benchmark Results ==="));
         send(server, sender, TextFormatting.GREEN + String.format(
-                "Area: radius %d (%d chunks) | Workers: %d | Center: [%d, %d] | Seed: %d",
-                radius, totalChunks, effectiveWorkers, centerX, centerZ, seed
+                "Area: radius %d (%d chunks) | Workers: base=%d feat=%d (auto) | Center: [%d, %d] | Seed: %d",
+                radius, totalChunks,
+                GenerationWorkerPool.getInstance().getBaseGenWorkerCount(),
+                GenerationWorkerPool.getInstance().getFeaturesWorkerCount(),
+                centerX, centerZ, seed
         ));
         send(server, sender, TextFormatting.YELLOW + String.format(
                 "Time Elapsed: %.2f s (%.1f chunks/s | %.0f chunks/min) | Completed: %d/%d",
