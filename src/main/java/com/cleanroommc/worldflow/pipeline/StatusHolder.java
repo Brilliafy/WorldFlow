@@ -29,6 +29,7 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     private final java.util.concurrent.atomic.AtomicBoolean ownDecorationDone = new java.util.concurrent.atomic.AtomicBoolean(false);
     private final java.util.concurrent.atomic.AtomicBoolean publishEnqueued = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private volatile String lastWorkerName = "none";
 
     public StatusHolder(WorldServer world, int x, int z, ChunkStatus targetStatus, GenerationPriority priority) {
         this.world = world;
@@ -157,6 +158,14 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     public boolean isPublishEnqueued() {
         return this.publishEnqueued.get();
+    }
+
+    public String getLastWorkerName() {
+        return this.lastWorkerName;
+    }
+
+    public void setLastWorkerName(String lastWorkerName) {
+        this.lastWorkerName = lastWorkerName;
     }
 
     @Override

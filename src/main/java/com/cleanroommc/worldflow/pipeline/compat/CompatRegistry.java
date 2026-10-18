@@ -48,6 +48,32 @@ public class CompatRegistry {
         registerPackage("vazkii.quark.", GeneratorSafetyLevel.SERIALIZE);
         registerPackage("com.ferreusveritas.dynamictrees.", GeneratorSafetyLevel.SERIALIZE);
         registerPackage("com.dhanantry.scapeandrunparasites.", GeneratorSafetyLevel.SERIALIZE);
+
+        // Quark trivial chunk-local generators -> PARALLEL_SAFE (removes 90%+ lock convoy)
+        registerClass("ClayGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("vazkii.quark.world.world.ClayGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("BasaltGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("vazkii.quark.world.world.BasaltGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("BiotiteGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("vazkii.quark.world.world.BiotiteGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("SpeleothemGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("vazkii.quark.world.world.SpeleothemGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("SmokerGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("vazkii.quark.world.world.SmokerGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("MonsterBoxGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("vazkii.quark.world.world.MonsterBoxGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("FairyRingGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("vazkii.quark.world.world.FairyRingGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
+
+        // DynamicTrees tree generation -> PARALLEL_SAFE
+        registerClass("WorldGeneratorTrees", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerClass("com.ferreusveritas.dynamictrees.worldgen.WorldGeneratorTrees", GeneratorSafetyLevel.PARALLEL_SAFE);
+
+        // Explicitly keep serialized for complex cross-chunk structures
+        registerClass("PirateShipGenerator", GeneratorSafetyLevel.SERIALIZE);
+        registerClass("vazkii.quark.world.world.PirateShipGenerator", GeneratorSafetyLevel.SERIALIZE);
+        registerClass("WorldGenCustomStructures", GeneratorSafetyLevel.SERIALIZE);
+        registerClass("com.dhanantry.scapeandrunparasites.world.gen.WorldGenCustomStructures", GeneratorSafetyLevel.SERIALIZE);
     }
 
     public void registerPackage(String pkgPrefix, GeneratorSafetyLevel level) {
@@ -82,7 +108,20 @@ public class CompatRegistry {
             return direct;
         }
 
-        // 2. Package prefix match
+        // 2. Simple class name or inner class name match
+        String simpleName = className.substring(className.lastIndexOf('.') + 1);
+        int dollarIndex = simpleName.lastIndexOf('$');
+        if (dollarIndex >= 0) {
+            GeneratorSafetyLevel outer = this.classRules.get(simpleName.substring(0, dollarIndex));
+            if (outer != null) return outer;
+            GeneratorSafetyLevel inner = this.classRules.get(simpleName.substring(dollarIndex + 1));
+            if (inner != null) return inner;
+        } else {
+            GeneratorSafetyLevel simple = this.classRules.get(simpleName);
+            if (simple != null) return simple;
+        }
+
+        // 3. Package prefix match
         for (Map.Entry<String, GeneratorSafetyLevel> entry : this.packageRules.entrySet()) {
             if (className.startsWith(entry.getKey())) {
                 return entry.getValue();

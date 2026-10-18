@@ -163,6 +163,50 @@ public class GenerationScheduler {
             }
         }
         notifyNeighboursOfCompletion(holder.getPos().x, holder.getPos().z);
+        sweepPublishable();
+    }
+
+    public void sweepPublishable() {
+        for (StatusHolder holder : this.inFlight.values()) {
+            if (holder.isOwnDecorationDone() && !holder.isDone()) {
+                if (canPublish(holder)) {
+                    if (holder.markPublishEnqueued()) {
+                        PublishManager.INSTANCE.enqueueReady(holder);
+                    }
+                }
+            }
+        }
+    }
+
+    public void requeueOrphaned(StatusHolder holder) {
+        if (holder == null || holder.isDone() || holder.isOwnDecorationDone()) {
+            return;
+        }
+        WorldFlow.LOGGER.info(String.format(
+                "[WorldFlow] Requeueing orphaned chunk [%d, %d] (stage=%s, worker=%s) for decoration",
+                holder.getPos().x, holder.getPos().z, holder.getCurrentStatus(), holder.getLastWorkerName()
+        ));
+        if (holder.getCurrentStatus() == ChunkStatus.EMPTY) {
+            GenerationWorkerPool.getInstance().executeBaseGen(holder, () -> executeBaseGeneration(holder));
+            return;
+        }
+
+        WorldServer world = holder.getWorld();
+        int cx = holder.getPos().x;
+        int cz = holder.getPos().z;
+        Map<Long, ProtoChunk> neighbourhood = new HashMap<>();
+        neighbourhood.put(holder.getChunkKey(), holder.getProtoChunk());
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                long nKey = ChunkPos.asLong(cx + dx, cz + dz);
+                ProtoChunk p = getProtoChunkAny(nKey);
+                if (p != null) {
+                    neighbourhood.put(nKey, p);
+                }
+            }
+        }
+        GenerationWorkerPool.getInstance().executeFeatures(holder, () -> executeFeatures(holder, neighbourhood));
     }
 
     public void notifyNeighboursOfCompletion(int cx, int cz) {
@@ -368,6 +412,7 @@ public class GenerationScheduler {
         WorldServer world = holder.getWorld();
         ChunkPos pos = holder.getPos();
         ProtoChunk proto = holder.getProtoChunk();
+        holder.setLastWorkerName(Thread.currentThread().getName());
 
         long startNanos = System.nanoTime();
         ThreadLocalWorldView.enter(world, pos, proto, "BaseGen");
@@ -510,8 +555,9 @@ public class GenerationScheduler {
 
     private void executeFeatures(StatusHolder holder, Map<Long, ProtoChunk> neighbourhood) {
         if (IS_DECORATING.get()) {
-            WorldFlow.LOGGER.warn("[WorldFlow] Detected recursive feature execution on thread {} for chunk [{}, {}], aborting re-entry",
+            WorldFlow.LOGGER.warn("[WorldFlow] Detected recursive feature execution on thread {} for chunk [{}, {}], resubmitting",
                     Thread.currentThread().getName(), holder.getPos().x, holder.getPos().z);
+            GenerationWorkerPool.getInstance().executeFeatures(holder, () -> executeFeatures(holder, neighbourhood));
             return;
         }
         IS_DECORATING.set(true);
@@ -519,6 +565,7 @@ public class GenerationScheduler {
         WorldServer world = holder.getWorld();
         ChunkPos pos = holder.getPos();
         ProtoChunk proto = holder.getProtoChunk();
+        holder.setLastWorkerName(Thread.currentThread().getName());
 
         com.cleanroommc.worldflow.pipeline.isolation.PopulationHighestBlocksCache.reset();
         long startNanos = System.nanoTime();
@@ -770,20 +817,26 @@ public class GenerationScheduler {
 
         long stallDuration = now - this.watchdogLastProgressTime.get();
         if (stallDuration >= 5000L) {
+            int activeWorkers = GenerationWorkerPool.getInstance().getActiveWorkerCount();
+            int queueSize = GenerationWorkerPool.getInstance().getQueueSize();
             if (inFlightCount > 0) {
                 for (StatusHolder h : this.inFlight.values()) {
                     long ageMs = (System.nanoTime() - h.getSubmissionTimeNanos()) / 1_000_000L;
                     if (ageMs > 5000L && !h.isDone()) {
                         WorldFlow.LOGGER.warn(String.format(
-                                "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=%b pendingWriters=%d owed by: %s",
-                                h.getPos().x, h.getPos().z, h.isOwnDecorationDone(), h.getPendingWriters(), getOwedBy(h)
+                                "[WorldFlow StallDetector] Stuck chunk [%d,%d] stage=%s worker=%s ownDone=%b pendingWriters=%d futureDone=%b (workerDone=%b, carversDone=%b) owed by: %s",
+                                h.getPos().x, h.getPos().z, h.getCurrentStatus(), h.getLastWorkerName(),
+                                h.isOwnDecorationDone(), h.getPendingWriters(), h.getFuture().isDone(),
+                                h.isWorkerDone(), h.getCarversFuture().isDone(), getOwedBy(h)
                         ));
                         if (h.isOwnDecorationDone()) {
-                            if (h.markPublishEnqueued()) {
-                                PublishManager.INSTANCE.enqueueReady(h);
+                            if (canPublish(h)) {
+                                if (h.markPublishEnqueued()) {
+                                    PublishManager.INSTANCE.enqueueReady(h);
+                                }
                             }
-                        } else {
-                            fallbackToMainThreadSerial(h);
+                        } else if (activeWorkers == 0 && queueSize == 0) {
+                            requeueOrphaned(h);
                         }
                     }
                 }

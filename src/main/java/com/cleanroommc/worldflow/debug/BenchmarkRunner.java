@@ -139,20 +139,25 @@ public class BenchmarkRunner {
                                             int pendingWriters = holder.getPendingWriters();
                                             List<net.minecraft.util.math.ChunkPos> owedBy = GenerationScheduler.getInstance().getOwedBy(holder);
                                             WorldFlow.LOGGER.warn(String.format(
-                                                    "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=%b pendingWriters=%d owed by: %s",
-                                                    entry.x, entry.z, ownDone, pendingWriters, owedBy
+                                                    "[WorldFlow StallDetector] Stuck chunk [%d,%d] stage=%s worker=%s ownDone=%b pendingWriters=%d futureDone=%b (workerDone=%b, carversDone=%b) owed by: %s",
+                                                    entry.x, entry.z, holder.getCurrentStatus(), holder.getLastWorkerName(),
+                                                    ownDone, pendingWriters, holder.getFuture().isDone(),
+                                                    holder.isWorkerDone(), holder.getCarversFuture().isDone(), owedBy
                                             ));
-                                            if (holder.markPublishEnqueued()) {
-                                                PublishManager.INSTANCE.publishChunk(world, holder);
-                                            }
-                                            if (holder.getFuture().isDone()) {
-                                                try {
-                                                    entry.future.complete(holder.getFuture().getNow(null));
-                                                } catch (Throwable ignored) {}
+                                            if (ownDone) {
+                                                if (holder.markPublishEnqueued()) {
+                                                    world.addScheduledTask(() -> PublishManager.INSTANCE.publishChunk(world, holder));
+                                                }
+                                            } else {
+                                                int active = GenerationWorkerPool.getInstance().getActiveWorkerCount();
+                                                int qSize = GenerationWorkerPool.getInstance().getQueueSize();
+                                                if (active == 0 && qSize == 0) {
+                                                    GenerationScheduler.getInstance().requeueOrphaned(holder);
+                                                }
                                             }
                                         } else {
                                             WorldFlow.LOGGER.warn(String.format(
-                                                    "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=unknown pendingWriters=0 owed by: [] (not in flight)",
+                                                    "[WorldFlow StallDetector] Stuck chunk [%d,%d] stage=unknown worker=none ownDone=unknown pendingWriters=0 futureDone=false (workerDone=false, carversDone=false) owed by: [] (not in flight)",
                                                     entry.x, entry.z
                                             ));
                                             Chunk loaded = world.getChunkProvider().getLoadedChunk(entry.x, entry.z);
@@ -186,18 +191,30 @@ public class BenchmarkRunner {
                                         int pendingWriters = holder.getPendingWriters();
                                         List<net.minecraft.util.math.ChunkPos> owedBy = GenerationScheduler.getInstance().getOwedBy(holder);
                                         WorldFlow.LOGGER.error(String.format(
-                                                "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=%b pendingWriters=%d owed by: %s",
-                                                entry.x, entry.z, ownDone, pendingWriters, owedBy
+                                                "[WorldFlow StallDetector] Stuck chunk [%d,%d] stage=%s worker=%s ownDone=%b pendingWriters=%d futureDone=%b (workerDone=%b, carversDone=%b) owed by: %s",
+                                                entry.x, entry.z, holder.getCurrentStatus(), holder.getLastWorkerName(),
+                                                ownDone, pendingWriters, holder.getFuture().isDone(),
+                                                holder.isWorkerDone(), holder.getCarversFuture().isDone(), owedBy
                                         ));
                                         Chunk chunk = holder.getProtoChunk().getChunk();
-                                        if (chunk == null) chunk = new Chunk(world, entry.x, entry.z);
+                                        if (chunk == null) {
+                                            chunk = new Chunk(world, entry.x, entry.z);
+                                            holder.getProtoChunk().setUnderlyingChunk(chunk);
+                                        }
+                                        holder.setCurrentStatus(ChunkStatus.FULL);
+                                        holder.setOwnDecorationDone(true);
+                                        holder.getCarversFuture().complete(chunk);
+                                        holder.getWorkerDoneFuture().complete(chunk);
+                                        holder.getFuture().complete(chunk);
                                         entry.future.complete(chunk);
                                     } else {
                                         WorldFlow.LOGGER.error(String.format(
-                                                "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=unknown pendingWriters=0 owed by: [] (not in flight)",
+                                                "[WorldFlow StallDetector] Stuck chunk [%d,%d] stage=unknown worker=none ownDone=unknown pendingWriters=0 futureDone=false (workerDone=false, carversDone=false) owed by: [] (not in flight)",
                                                 entry.x, entry.z
                                         ));
-                                        entry.future.complete(new Chunk(world, entry.x, entry.z));
+                                        Chunk fallback = world.getChunkProvider().getLoadedChunk(entry.x, entry.z);
+                                        if (fallback == null) fallback = new Chunk(world, entry.x, entry.z);
+                                        entry.future.complete(fallback);
                                     }
                                 }
                             }

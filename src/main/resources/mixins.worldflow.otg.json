@@ -11,7 +11,10 @@
     "ForgeWorldMixin",
     "OreGenMixin",
     "CustomStructureCacheMixin",
-    "CustomStructurePlotterMixin"
+    "CustomStructurePlotterMixin",
+    "ArraysCacheManagerMixin",
+    "CachedBiomeGeneratorMixin",
+    "MaterialHelperMixin"
   ],
   "server": [],
   "client": []

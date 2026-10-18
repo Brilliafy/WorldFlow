@@ -275,16 +275,32 @@ public class ChunkDumper {
                     Chunk pipeChunk = null;
 
                     try {
+                        // Reset caches to prevent stale cross-chunk contamination
+                        net.minecraft.world.gen.layer.IntCache.resetIntCache();
+                        net.minecraft.world.gen.IChunkGenerator mainGen = world.getChunkProvider().chunkGenerator;
+                        if (mainGen != null && "com.pg85.otg.forge.generator.OTGChunkGenerator".equals(mainGen.getClass().getName())) {
+                            try {
+                                ((com.pg85.otg.forge.generator.OTGChunkGenerator) mainGen).clearChunkCache();
+                            } catch (Throwable ignored) {}
+                        }
+
                         // Inline generation on main server thread
                         boolean wasGen = ThreadLocalWorldView.isGenerating();
                         if (wasGen) ThreadLocalWorldView.exit();
                         inlineChunk = world.getChunkProvider().chunkGenerator.generateChunk(x, z);
 
                         // Pipeline generation
+                        net.minecraft.world.gen.layer.IntCache.resetIntCache();
                         ProtoChunk proto = new ProtoChunk(world, x, z);
                         ThreadLocalWorldView.enter(world, pos, proto, "DiffArea");
                         try {
-                            pipeChunk = WorkerGeneratorContext.get().getChunkGenerator(world).generateChunk(x, z);
+                            net.minecraft.world.gen.IChunkGenerator pipeGen = WorkerGeneratorContext.get().getChunkGenerator(world);
+                            if (pipeGen != null && "com.pg85.otg.forge.generator.OTGChunkGenerator".equals(pipeGen.getClass().getName())) {
+                                try {
+                                    ((com.pg85.otg.forge.generator.OTGChunkGenerator) pipeGen).clearChunkCache();
+                                } catch (Throwable ignored) {}
+                            }
+                            pipeChunk = pipeGen.generateChunk(x, z);
                         } finally {
                             ThreadLocalWorldView.exit();
                         }

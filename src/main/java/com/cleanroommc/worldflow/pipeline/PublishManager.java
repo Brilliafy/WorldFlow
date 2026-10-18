@@ -43,6 +43,7 @@ public class PublishManager {
      */
     public int tick(WorldServer world, int maxBudget) {
         CascadeBlockBuffer.INSTANCE.flushStagedEntitiesForLoadedChunks(world);
+        GenerationScheduler.getInstance().sweepPublishable();
         if (this.pendingPublishQueue.isEmpty()) {
             return 0;
         }
@@ -153,6 +154,7 @@ public class PublishManager {
         // 8. Cleanup from in-flight tracker
         GenerationScheduler.getInstance().removeInFlight(key);
         GenerationScheduler.getInstance().notifyNeighboursOfCompletion(cx, cz);
+        GenerationScheduler.getInstance().sweepPublishable();
     }
 
     public int getPendingCount() {
