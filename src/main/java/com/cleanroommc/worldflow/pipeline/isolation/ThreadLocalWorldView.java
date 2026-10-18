@@ -142,16 +142,17 @@ public class ThreadLocalWorldView {
             return proto.setBlockState(pos, state);
         }
 
-        // Check if loaded in live world
+        // Check if loaded in live world (e.g. post-publish late write)
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
         if (loaded != null) {
-            if (loaded instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk
-                    && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) loaded).worldflow$isPublished()) {
-                com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] Worker {} blocked from mutating already-published chunk [{}, {}] at {}",
-                        ctx.generatorName, chunkX, chunkZ, pos);
+            synchronized (loaded) {
+                IBlockState res = loaded.setBlockState(pos, state);
+                if (res != null) {
+                    loaded.markDirty();
+                    return true;
+                }
                 return false;
             }
-            return loaded.setBlockState(pos, state) != null;
         }
 
         // Outside neighbourhood and not loaded: STAGE in CascadeBlockBuffer to avoid cascading generation
@@ -284,13 +285,26 @@ public class ThreadLocalWorldView {
 
     public static boolean setTileEntity(World world, BlockPos pos, TileEntity tileEntity) {
         GenerationWorkerContext ctx = CURRENT_CONTEXT.get();
-        if (ctx == null) {
+        if (ctx == null || tileEntity == null) {
             return false;
         }
 
         int chunkX = pos.getX() >> 4;
         int chunkZ = pos.getZ() >> 4;
         long key = ChunkPos.asLong(chunkX, chunkZ);
+
+        // ATOMICITY GUARD: Verify the block at this position actually supports a TileEntity!
+        IBlockState currentBlock = getBlockState(world, pos);
+        if (currentBlock == null || !currentBlock.getBlock().hasTileEntity(currentBlock)) {
+            com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] TileEntity Atomicity Guard: Rejected TileEntity {} at {} because block is {}",
+                    tileEntity.getClass().getName(), pos,
+                    currentBlock != null ? currentBlock.getBlock().getRegistryName() : "null");
+            com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().guardsBlockedCount.incrementAndGet();
+            return false;
+        }
+
+        tileEntity.setWorld(world);
+        tileEntity.setPos(pos);
 
         ProtoChunk proto = ctx.neighbourhood.get(key);
         if (proto != null) {
@@ -300,11 +314,39 @@ public class ThreadLocalWorldView {
 
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
         if (loaded != null) {
-            loaded.addTileEntity(pos, tileEntity);
+            synchronized (loaded) {
+                IBlockState loadedState = loaded.getBlockState(pos);
+                if (loadedState == null || !loadedState.getBlock().hasTileEntity(loadedState)) {
+                    com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().guardsBlockedCount.incrementAndGet();
+                    return false;
+                }
+                loaded.addTileEntity(pos, tileEntity);
+                loaded.markDirty();
+            }
+            if (world instanceof WorldServer) {
+                ((WorldServer) world).addScheduledTask(() -> {
+                    if (world.getChunkProvider().getLoadedChunk(chunkX, chunkZ) != null) {
+                        world.addTileEntity(tileEntity);
+                    }
+                });
+            }
             return true;
         }
 
-        return false;
+        net.minecraft.nbt.NBTTagCompound nbt = new net.minecraft.nbt.NBTTagCompound();
+        try {
+            tileEntity.writeToNBT(nbt);
+        } catch (Throwable t) {
+            com.cleanroommc.worldflow.WorldFlow.LOGGER.debug("[WorldFlow] Failed to serialize staged TileEntity NBT", t);
+        }
+        CascadeBlockBuffer.INSTANCE.stageBlock(
+                world,
+                pos,
+                currentBlock,
+                nbt,
+                ctx.generatorName != null ? ctx.generatorName : "ParallelGenWorker"
+        );
+        return true;
     }
 
     @Nullable

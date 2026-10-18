@@ -149,6 +149,20 @@ public abstract class WorldMixin {
         }
     }
 
+    @Inject(method = "setTileEntity(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/tileentity/TileEntity;)V",
+            at = @At("HEAD"),
+            cancellable = true)
+    private void worldflow$onSetTileEntity(BlockPos pos, TileEntity tileEntity, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (!ThreadLocalWorldView.isGenerating()) {
+            return;
+        }
+        ci.cancel();
+        if (tileEntity == null) {
+            return;
+        }
+        ThreadLocalWorldView.setTileEntity((World) (Object) this, pos, tileEntity);
+    }
+
     @Inject(method = "spawnEntity",
             at = @At("HEAD"),
             cancellable = true)

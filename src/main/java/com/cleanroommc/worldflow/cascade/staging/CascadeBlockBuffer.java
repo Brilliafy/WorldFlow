@@ -73,10 +73,21 @@ public class CascadeBlockBuffer {
 
         if (world.getChunkProvider() instanceof net.minecraft.world.gen.ChunkProviderServer) {
             Chunk loaded = ((net.minecraft.world.gen.ChunkProviderServer) world.getChunkProvider()).getLoadedChunk(chunkX, chunkZ);
-            if (loaded instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk
-                    && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) loaded).worldflow$isPublished()) {
-                WorldFlow.LOGGER.warn("[WorldFlow] Rejecting staging block into already-published chunk [{}, {}] from {}", chunkX, chunkZ, sourceName);
-                return;
+            if (loaded != null) {
+                synchronized (loaded) {
+                    IBlockState old = loaded.setBlockState(pos, state);
+                    if (old != null) {
+                        if (teNbt != null) {
+                            TileEntity te = world.getTileEntity(pos);
+                            if (te != null) {
+                                te.readFromNBT(teNbt);
+                                te.markDirty();
+                            }
+                        }
+                        loaded.markDirty();
+                        return;
+                    }
+                }
             }
         }
 
@@ -106,12 +117,6 @@ public class CascadeBlockBuffer {
     }
 
     public int flushChunk(WorldServer world, Chunk chunk) {
-        if (chunk instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk
-                && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) chunk).worldflow$isPublished()) {
-            WorldFlow.LOGGER.warn("[WorldFlow] Rejecting late staged block flush for already-published chunk [{}, {}]", chunk.x, chunk.z);
-            return 0;
-        }
-
         int dim = world.provider.getDimension();
         ChunkPos chunkPos = chunk.getPos();
 

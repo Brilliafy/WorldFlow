@@ -27,6 +27,10 @@ public class StatusHolder implements Comparable<StatusHolder> {
     private final GenerationPriority initialPriority;
     private volatile boolean skipGhostCleanup = false;
 
+    private final AtomicInteger pendingWriters = new AtomicInteger(1);
+    private final java.util.concurrent.atomic.AtomicBoolean ownDecorationDone = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean publishEnqueued = new java.util.concurrent.atomic.AtomicBoolean(false);
+
     public StatusHolder(WorldServer world, int x, int z, ChunkStatus targetStatus, GenerationPriority priority) {
         this.world = world;
         this.pos = new ChunkPos(x, z);
@@ -126,6 +130,34 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     public boolean isDone() {
         return this.future.isDone() || this.getCurrentStatus() == ChunkStatus.FULL;
+    }
+
+    public int getPendingWriters() {
+        return this.pendingWriters.get();
+    }
+
+    public int incrementPendingWriters() {
+        return this.pendingWriters.incrementAndGet();
+    }
+
+    public int decrementPendingWriters() {
+        return this.pendingWriters.decrementAndGet();
+    }
+
+    public boolean isOwnDecorationDone() {
+        return this.ownDecorationDone.get();
+    }
+
+    public void setOwnDecorationDone(boolean done) {
+        this.ownDecorationDone.set(done);
+    }
+
+    public boolean markPublishEnqueued() {
+        return this.publishEnqueued.compareAndSet(false, true);
+    }
+
+    public boolean isPublishEnqueued() {
+        return this.publishEnqueued.get();
     }
 
     @Override

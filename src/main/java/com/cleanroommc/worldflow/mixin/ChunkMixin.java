@@ -60,14 +60,6 @@ public abstract class ChunkMixin implements IWorldFlowChunk {
         this.worldflow$published = published;
     }
 
-    @Inject(method = "setBlockState", at = @At("HEAD"), cancellable = true)
-    private void worldflow$onSetBlockState(net.minecraft.util.math.BlockPos pos, net.minecraft.block.state.IBlockState state, CallbackInfoReturnable<net.minecraft.block.state.IBlockState> cir) {
-        if (this.worldflow$published && com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
-            com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] Guard blocked mutation of published chunk [{}, {}] at {} by worker thread", this.x, this.z, pos);
-            cir.setReturnValue(null);
-        }
-    }
-
     @Shadow
     @Final
     public int x;
@@ -98,7 +90,7 @@ public abstract class ChunkMixin implements IWorldFlowChunk {
         }
         if (ModConfig.GENERAL.enableCascadeFix && ModConfig.GENERAL.stageForgeDecorators) {
             GenerationContext.exitPopulate();
-            if (this.world instanceof WorldServer && !this.worldflow$published) {
+            if (this.world instanceof WorldServer) {
                 CascadeBlockBuffer.INSTANCE.flushChunk((WorldServer) this.world, (Chunk) (Object) this);
             }
         }

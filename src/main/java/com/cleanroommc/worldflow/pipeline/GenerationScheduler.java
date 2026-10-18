@@ -63,6 +63,10 @@ public class GenerationScheduler {
     private final AtomicLong parallelCount = new AtomicLong(0);
     private final AtomicLong serializedCount = new AtomicLong(0);
 
+    public final AtomicLong guardsBlockedCount = new AtomicLong(0);
+    private final ConcurrentHashMap<String, AtomicLong> serializedGeneratorCounts = new ConcurrentHashMap<>();
+    private final Object writerGraphLock = new Object();
+
     // Deadlock Watchdog tracking
     private final AtomicLong watchdogLastPublished = new AtomicLong(0);
     private final AtomicLong watchdogLastProgressTime = new AtomicLong(System.currentTimeMillis());
@@ -70,6 +74,77 @@ public class GenerationScheduler {
 
     public static GenerationScheduler getInstance() {
         return INSTANCE;
+    }
+
+    public long getGuardsBlockedCount() {
+        return this.guardsBlockedCount.get();
+    }
+
+    public void recordSerializedGenerator(String className) {
+        if (className != null) {
+            this.serializedGeneratorCounts.computeIfAbsent(className, k -> new AtomicLong(0)).incrementAndGet();
+        }
+    }
+
+    public Map<String, Long> getSerializedGeneratorCountsSnapshot() {
+        Map<String, Long> map = new HashMap<>();
+        for (Map.Entry<String, AtomicLong> entry : this.serializedGeneratorCounts.entrySet()) {
+            map.put(entry.getKey(), entry.getValue().get());
+        }
+        return map;
+    }
+
+    public void registerPendingWriters(StatusHolder holder) {
+        if (holder == null || holder.getTargetStatus() != ChunkStatus.FULL) {
+            return;
+        }
+        int cx = holder.getPos().x;
+        int cz = holder.getPos().z;
+        synchronized (this.writerGraphLock) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    if (dx == 0 && dz == 0) continue;
+                    long nKey = ChunkPos.asLong(cx + dx, cz + dz);
+                    StatusHolder nHolder = this.inFlight.get(nKey);
+                    if (nHolder != null && nHolder.getTargetStatus() == ChunkStatus.FULL && !nHolder.isOwnDecorationDone()) {
+                        holder.incrementPendingWriters();
+                        nHolder.incrementPendingWriters();
+                    }
+                }
+            }
+        }
+    }
+
+    public void completeWriter(StatusHolder holder) {
+        if (holder == null) return;
+        List<StatusHolder> readyToPublish = new ArrayList<>();
+        synchronized (this.writerGraphLock) {
+            holder.setOwnDecorationDone(true);
+            int remaining = holder.decrementPendingWriters();
+            if (remaining <= 0) {
+                readyToPublish.add(holder);
+            }
+            int cx = holder.getPos().x;
+            int cz = holder.getPos().z;
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    if (dx == 0 && dz == 0) continue;
+                    long nKey = ChunkPos.asLong(cx + dx, cz + dz);
+                    StatusHolder nHolder = this.inFlight.get(nKey);
+                    if (nHolder != null) {
+                        int nRemaining = nHolder.decrementPendingWriters();
+                        if (nRemaining <= 0 && nHolder.isOwnDecorationDone()) {
+                            readyToPublish.add(nHolder);
+                        }
+                    }
+                }
+            }
+        }
+        for (StatusHolder ready : readyToPublish) {
+            if (ready.markPublishEnqueued()) {
+                PublishManager.INSTANCE.enqueueReady(ready);
+            }
+        }
     }
 
     private GenerationScheduler() {
@@ -119,6 +194,7 @@ public class GenerationScheduler {
             existing.bumpPriority(priority);
             if (targetStatus == ChunkStatus.FULL && existing.getTargetStatus() != ChunkStatus.FULL) {
                 existing.setTargetStatus(ChunkStatus.FULL);
+                registerPendingWriters(existing);
                 if (existing.getCurrentStatus().isAtLeast(ChunkStatus.CARVERS) && !existing.isDone()) {
                     advanceChunk(existing);
                 }
@@ -147,6 +223,7 @@ public class GenerationScheduler {
                 prev.setTargetStatus(targetStatus);
                 return prev.getFuture();
             }
+            registerPendingWriters(holder);
             advanceChunk(holder);
             return holder.getFuture();
         }
@@ -183,6 +260,7 @@ public class GenerationScheduler {
             prev.setTargetStatus(targetStatus);
             return prev.getFuture();
         }
+        registerPendingWriters(holder);
 
         // 8. Begin staged pipeline execution
         advanceChunk(holder);
@@ -215,6 +293,7 @@ public class GenerationScheduler {
         StatusHolder pending = this.pendingRequests.remove(key);
         if (pending != null) {
             this.inFlight.put(key, pending);
+            registerPendingWriters(pending);
             advanceChunk(pending);
             return pending.getCarversFuture();
         }
@@ -245,8 +324,8 @@ public class GenerationScheduler {
             // Stage CARVERS -> FEATURES: requires 3x3 neighbours at least at CARVERS
             checkAndScheduleFeatures(holder);
         } else if (current == ChunkStatus.FEATURES || current == ChunkStatus.LIGHT) {
-            // Hand off to publish manager
-            PublishManager.INSTANCE.enqueueReady(holder);
+            // Hand off to completeWriter to publish only when no pending writers remain
+            completeWriter(holder);
         }
     }
 
@@ -346,6 +425,7 @@ public class GenerationScheduler {
                 StatusHolder pending = this.pendingRequests.remove(nKey);
                 if (pending != null) {
                     this.inFlight.put(nKey, pending);
+                    registerPendingWriters(pending);
                     advanceChunk(pending);
                     allReady = false;
                     neighbourFutures.add(pending.getCarversFuture());
@@ -460,6 +540,7 @@ public class GenerationScheduler {
             GeneratorSafetyLevel genSafety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
             if (isOtg || genSafety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
+                recordSerializedGenerator(generator.getClass().getName());
                 java.util.concurrent.locks.ReentrantLock lock = OTGParallelContext.getStructureLock(pos.x, pos.z);
                 boolean acquired = false;
                 try {
@@ -500,11 +581,12 @@ public class GenerationScheduler {
             IS_DECORATING.set(false);
         }
 
-        // Ready for publish to main thread
-        PublishManager.INSTANCE.enqueueReady(holder);
+        // Complete this writer and publish any chunks whose pending writers have reached 0
+        completeWriter(holder);
     }
 
     private void fallbackToMainThreadSerial(StatusHolder holder) {
+        completeWriter(holder);
         WorldServer world = holder.getWorld();
         ChunkPos pos = holder.getPos();
         world.addScheduledTask(() -> {
@@ -574,6 +656,7 @@ public class GenerationScheduler {
             GeneratorSafetyLevel safety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
             if (safety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
+                recordSerializedGenerator(generator.getClass().getName());
                 ReentrantLock lock = this.generatorLocks.computeIfAbsent(generator, g -> new ReentrantLock());
                 boolean acquired = false;
                 try {
@@ -595,6 +678,7 @@ public class GenerationScheduler {
                 generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
             } else if (safety == GeneratorSafetyLevel.UNSAFE) {
                 this.serializedCount.incrementAndGet();
+                recordSerializedGenerator(generator.getClass().getName());
                 try {
                     GenerationWorkerPool.getInstance().submitSerializer(() -> {
                         generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
@@ -668,8 +752,16 @@ public class GenerationScheduler {
                 for (StatusHolder h : this.inFlight.values()) {
                     long ageMs = (System.nanoTime() - h.getSubmissionTimeNanos()) / 1_000_000L;
                     if (ageMs > 30000L && !h.isDone()) {
-                        WorldFlow.LOGGER.warn("[WorldFlow Watchdog] Unfreezing stuck chunk [{}, {}] via serial fallback", h.getPos().x, h.getPos().z);
-                        fallbackToMainThreadSerial(h);
+                        if (h.isOwnDecorationDone() && h.getPendingWriters() > 0) {
+                            WorldFlow.LOGGER.warn("[WorldFlow Watchdog] Forcing publication of stuck chunk [{}, {}] (pending writers={})",
+                                    h.getPos().x, h.getPos().z, h.getPendingWriters());
+                            if (h.markPublishEnqueued()) {
+                                PublishManager.INSTANCE.enqueueReady(h);
+                            }
+                        } else {
+                            WorldFlow.LOGGER.warn("[WorldFlow Watchdog] Unfreezing stuck chunk [{}, {}] via serial fallback", h.getPos().x, h.getPos().z);
+                            fallbackToMainThreadSerial(h);
+                        }
                     }
                 }
             }
@@ -739,7 +831,7 @@ public class GenerationScheduler {
         int queueDepth = PublishManager.INSTANCE.getPendingCount();
 
         WorldFlow.LOGGER.info(String.format(
-                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | Serialized: %d | Parallel: %d | Active Workers: %d",
+                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | Serialized: %d | Parallel: %d | Guards Blocked: %d | Active Workers: %d",
                 chunksPerSec,
                 chunksPerMin,
                 totalPublished,
@@ -751,6 +843,7 @@ public class GenerationScheduler {
                 avgFeatMs,
                 this.serializedCount.get(),
                 this.parallelCount.get(),
+                this.guardsBlockedCount.get(),
                 GenerationWorkerPool.getInstance().getActiveWorkerCount()
         ));
     }
@@ -841,6 +934,7 @@ public class GenerationScheduler {
 
             StatusHolder prev = this.inFlight.putIfAbsent(key, holder);
             if (prev == null) {
+                registerPendingWriters(holder);
                 advanceChunk(holder);
             }
         }

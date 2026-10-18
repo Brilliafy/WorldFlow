@@ -20,7 +20,7 @@ import java.lang.reflect.Method;
  */
 public class OTGParallelContext {
 
-    public static final int NUM_SHARDS = 16;
+    public static final int NUM_SHARDS = 64;
     private static final java.util.concurrent.locks.ReentrantLock[] SHARDED_LOCKS = new java.util.concurrent.locks.ReentrantLock[NUM_SHARDS];
 
     static {
@@ -32,9 +32,9 @@ public class OTGParallelContext {
     public static final java.util.concurrent.locks.ReentrantLock OTG_STRUCTURE_LOCK = SHARDED_LOCKS[0];
 
     public static java.util.concurrent.locks.ReentrantLock getStructureLock(int chunkX, int chunkZ) {
-        int macroX = chunkX >> 2;
-        int macroZ = chunkZ >> 2;
-        int hash = (macroX * 31 + macroZ) & (NUM_SHARDS - 1);
+        int macroX = chunkX >> 1;
+        int macroZ = chunkZ >> 1;
+        int hash = ((macroX * 31) ^ macroZ) & (NUM_SHARDS - 1);
         return SHARDED_LOCKS[hash];
     }
 

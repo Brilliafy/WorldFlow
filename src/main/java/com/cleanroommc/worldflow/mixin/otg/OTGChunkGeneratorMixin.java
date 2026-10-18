@@ -125,7 +125,7 @@ public abstract class OTGChunkGeneratorMixin {
         if (rawWorld instanceof WorldServer) {
             WorldServer worldServer = (WorldServer) rawWorld;
             Chunk chunk = worldServer.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
-            if (chunk != null && (!(chunk instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) || !((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) chunk).worldflow$isPublished())) {
+            if (chunk != null) {
                 CascadeBlockBuffer.INSTANCE.flushChunk(worldServer, chunk);
             }
         }

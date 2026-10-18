@@ -260,6 +260,13 @@ public class ProtoChunk {
 
     public void addTileEntity(BlockPos pos, TileEntity tileEntity) {
         if (tileEntity != null) {
+            IBlockState state = getBlockState(pos);
+            if (state == null || !state.getBlock().hasTileEntity(state)) {
+                com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] ProtoChunk TE Atomicity Guard: Rejected {} at {} because block is {}",
+                        tileEntity.getClass().getName(), pos, state != null ? state.getBlock().getRegistryName() : "null");
+                com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().guardsBlockedCount.incrementAndGet();
+                return;
+            }
             boolean acquired = false;
             try {
                 acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
@@ -278,7 +285,7 @@ public class ProtoChunk {
             } else {
                 net.minecraft.nbt.NBTTagCompound nbt = new net.minecraft.nbt.NBTTagCompound();
                 tileEntity.writeToNBT(nbt);
-                CascadeBlockBuffer.INSTANCE.stageBlock(this.world, pos, this.world.getBlockState(pos), nbt, "ContendedTileEntityLock");
+                CascadeBlockBuffer.INSTANCE.stageBlock(this.world, pos, state, nbt, "ContendedTileEntityLock");
             }
         }
     }

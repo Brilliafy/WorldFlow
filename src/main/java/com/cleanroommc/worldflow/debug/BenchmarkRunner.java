@@ -15,9 +15,12 @@ import net.minecraft.world.WorldServer;
 import net.minecraft.world.chunk.Chunk;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 public class BenchmarkRunner {
 
@@ -52,6 +55,8 @@ public class BenchmarkRunner {
                 long startBaseGenCount = GenerationScheduler.getInstance().getTotalBaseGenCount();
                 long startFeatNanos = GenerationScheduler.getInstance().getTotalFeaturesNanos();
                 long startFeatCount = GenerationScheduler.getInstance().getTotalFeaturesCount();
+                long startGuardsBlocked = GenerationScheduler.getInstance().getGuardsBlockedCount();
+                Map<String, Long> startGenCounts = GenerationScheduler.getInstance().getSerializedGeneratorCountsSnapshot();
 
                 int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
                 List<CompletableFuture<Chunk>> futures = new ArrayList<>(totalChunks);
@@ -131,6 +136,20 @@ public class BenchmarkRunner {
                 double avgBaseMs = deltaBaseGenCount > 0 ? (deltaBaseGenNanos / 1_000_000.0) / deltaBaseGenCount : 0.0;
                 double avgFeatMs = deltaFeatCount > 0 ? (deltaFeatNanos / 1_000_000.0) / deltaFeatCount : 0.0;
 
+                long deltaGuardsBlocked = GenerationScheduler.getInstance().getGuardsBlockedCount() - startGuardsBlocked;
+                Map<String, Long> endGenCounts = GenerationScheduler.getInstance().getSerializedGeneratorCountsSnapshot();
+                Map<String, Long> deltaGenCounts = new HashMap<>();
+                for (Map.Entry<String, Long> entry : endGenCounts.entrySet()) {
+                    long diff = entry.getValue() - startGenCounts.getOrDefault(entry.getKey(), 0L);
+                    if (diff > 0) {
+                        deltaGenCounts.put(entry.getKey(), diff);
+                    }
+                }
+                List<Map.Entry<String, Long>> top10 = deltaGenCounts.entrySet().stream()
+                        .sorted((e1, e2) -> Long.compare(e2.getValue(), e1.getValue()))
+                        .limit(10)
+                        .collect(Collectors.toList());
+
                 long seed = world.getSeed();
                 send(server, sender, TextFormatting.GOLD + "=== WorldFlow Pipeline Benchmark Results ===");
                 send(server, sender, TextFormatting.GREEN + String.format(
@@ -146,13 +165,25 @@ public class BenchmarkRunner {
                         deltaPipeline, deltaInline, deltaPublished
                 ));
                 send(server, sender, TextFormatting.WHITE + String.format(
-                        "Generator Modes: Parallel=%d / Serialized=%d",
-                        deltaParallel, deltaSerialized
+                        "Generator Modes: Parallel=%d / Serialized=%d | Guards blocked: %d",
+                        deltaParallel, deltaSerialized, deltaGuardsBlocked
                 ));
                 send(server, sender, TextFormatting.GRAY + String.format(
                         "Avg Times: BaseGen=%.1fms / Features=%.1fms",
                         avgBaseMs, avgFeatMs
                 ));
+
+                send(server, sender, TextFormatting.GOLD + "Top Serialized Generators:");
+                if (top10.isEmpty()) {
+                    send(server, sender, TextFormatting.GRAY + "  None (all generators ran parallel)");
+                } else {
+                    int rank = 1;
+                    for (Map.Entry<String, Long> entry : top10) {
+                        send(server, sender, TextFormatting.YELLOW + String.format(
+                                "  #%d [%d calls] %s", rank++, entry.getValue(), entry.getKey()
+                        ));
+                    }
+                }
 
                 send(server, sender, TextFormatting.GREEN + String.format(
                         "[WorldFlow Bench] Benchmark complete! Run '/worldflow diffarea %d 4 %d %d' to verify chunk bit-equivalence.",
