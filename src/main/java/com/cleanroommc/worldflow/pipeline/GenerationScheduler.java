@@ -501,10 +501,18 @@ public class GenerationScheduler {
                 }
             }
         } else if (stage == ChunkStatus.CARVERS) {
-            if (holder.isCarversDone() && !holder.isWorkerDone() && !holder.isFeaturesRunning()) {
+            if (holder.isCarversDone() && !holder.isWorkerDone()) {
                 long ageMs = holder.getFeaturesScheduledAtNanos() > 0L
                         ? (now - holder.getFeaturesScheduledAtNanos()) / 1_000_000L : Long.MAX_VALUE;
-                if (!holder.isFeaturesScheduled() || ageMs > 1000L) {
+                // A "running" flag older than 60s means the task died without clearing it.
+                if (holder.isFeaturesRunning() && ageMs > 60_000L) {
+                    WorldFlow.LOGGER.warn("[WorldFlow] Clearing stale feature-running flag for chunk [{}, {}] (age {}ms)",
+                            holder.getPos().x, holder.getPos().z, ageMs);
+                    holder.setFeaturesRunning(false);
+                    holder.resetFeaturesScheduled();
+                }
+                if (!holder.isFeaturesRunning()
+                        && (!holder.isFeaturesScheduled() || ageMs > 1000L)) {
                     holder.resetFeaturesScheduled();
                     checkAndScheduleFeatures(holder);
                 }
@@ -656,7 +664,17 @@ public class GenerationScheduler {
 
         com.cleanroommc.worldflow.pipeline.isolation.PopulationHighestBlocksCache.reset();
         long startNanos = System.nanoTime();
-        ThreadLocalWorldView.enter(world, pos, proto, "Features");
+        try {
+            ThreadLocalWorldView.enter(world, pos, proto, "Features");
+        } catch (Throwable t) {
+            // Never leak the running flags: a leaked flag makes the watchdog believe the chunk
+            // is being decorated and it will never be retried (silent in-flight stall).
+            WorldFlow.LOGGER.warn("[WorldFlow] Failed to enter generation context for chunk [{}, {}]", pos.x, pos.z, t);
+            holder.setFeaturesRunning(false);
+            IS_DECORATING.set(false);
+            holder.resetFeaturesScheduled();
+            return;
+        }
         ThreadLocalWorldView.attachNeighbourhood(neighbourhood);
         try {
             ChunkProviderServer provider = world.getChunkProvider();
