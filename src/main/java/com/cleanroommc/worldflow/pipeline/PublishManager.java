@@ -152,6 +152,7 @@ public class PublishManager {
 
         // 8. Cleanup from in-flight tracker
         GenerationScheduler.getInstance().removeInFlight(key);
+        GenerationScheduler.getInstance().notifyNeighboursOfCompletion(cx, cz);
     }
 
     public int getPendingCount() {

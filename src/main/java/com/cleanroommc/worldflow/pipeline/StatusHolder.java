@@ -27,7 +27,6 @@ public class StatusHolder implements Comparable<StatusHolder> {
     private final GenerationPriority initialPriority;
     private volatile boolean skipGhostCleanup = false;
 
-    private final AtomicInteger pendingWriters = new AtomicInteger(1);
     private final java.util.concurrent.atomic.AtomicBoolean ownDecorationDone = new java.util.concurrent.atomic.AtomicBoolean(false);
     private final java.util.concurrent.atomic.AtomicBoolean publishEnqueued = new java.util.concurrent.atomic.AtomicBoolean(false);
 
@@ -133,15 +132,15 @@ public class StatusHolder implements Comparable<StatusHolder> {
     }
 
     public int getPendingWriters() {
-        return this.pendingWriters.get();
+        return GenerationScheduler.getInstance().getPendingWritersCount(this);
     }
 
     public int incrementPendingWriters() {
-        return this.pendingWriters.incrementAndGet();
+        return getPendingWriters();
     }
 
     public int decrementPendingWriters() {
-        return this.pendingWriters.decrementAndGet();
+        return getPendingWriters();
     }
 
     public boolean isOwnDecorationDone() {

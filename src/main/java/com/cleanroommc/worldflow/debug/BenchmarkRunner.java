@@ -7,6 +7,7 @@ import com.cleanroommc.worldflow.pipeline.GenerationPriority;
 import com.cleanroommc.worldflow.pipeline.GenerationScheduler;
 import com.cleanroommc.worldflow.pipeline.GenerationWorkerPool;
 import com.cleanroommc.worldflow.pipeline.PublishManager;
+import com.cleanroommc.worldflow.pipeline.StatusHolder;
 import net.minecraft.command.ICommandSender;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.text.TextComponentString;
@@ -59,7 +60,7 @@ public class BenchmarkRunner {
                 Map<String, Long> startGenCounts = GenerationScheduler.getInstance().getSerializedGeneratorCountsSnapshot();
 
                 int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
-                List<CompletableFuture<Chunk>> futures = new ArrayList<>(totalChunks);
+                List<BenchChunkEntry> entries = new ArrayList<>(totalChunks);
                 for (int dx = -radius; dx <= radius; dx++) {
                     for (int dz = -radius; dz <= radius; dz++) {
                         int x = centerX + dx;
@@ -77,16 +78,24 @@ public class BenchmarkRunner {
                         CompletableFuture<Chunk> future = GenerationScheduler.getInstance().requestChunk(
                                 world, x, z, ChunkStatus.FULL, GenerationPriority.PLAYER
                         );
-                        futures.add(future);
+                        entries.add(new BenchChunkEntry(x, z, future));
                     }
                 }
 
+                // Timeout at 3x expected duration (minimum 60s)
+                double expectedSec = Math.max(10.0, totalChunks / 5.0);
+                long timeoutMs = Math.max(60000L, (long) (expectedSec * 3.0 * 1000L));
+
                 // Progress polling loop
                 long lastLogMs = System.currentTimeMillis();
+                int lastCompleted = 0;
+                long stallStartTimeMs = -1L;
+                boolean timedOut = false;
+
                 while (true) {
                     int completed = 0;
-                    for (CompletableFuture<Chunk> f : futures) {
-                        if (f.isDone()) {
+                    for (BenchChunkEntry entry : entries) {
+                        if (entry.future.isDone()) {
                             completed++;
                         }
                     }
@@ -96,16 +105,106 @@ public class BenchmarkRunner {
                     }
 
                     long now = System.currentTimeMillis();
+
+                    if (completed > lastCompleted) {
+                        lastCompleted = completed;
+                        stallStartTimeMs = -1L;
+                    }
+
+                    int inFlightCount = GenerationScheduler.getInstance().getInFlightCount();
+                    int queueDepth = PublishManager.INSTANCE.getPendingCount() + GenerationWorkerPool.getInstance().getQueueSize();
+                    int unpublished = totalChunks - completed;
+
+                    // Stall detector: If In-Flight == 0 && QueueDepth == 0 && unpublished > 0 for 5 s
+                    if (inFlightCount == 0 && queueDepth == 0 && unpublished > 0) {
+                        if (stallStartTimeMs < 0) {
+                            stallStartTimeMs = now;
+                        } else if (now - stallStartTimeMs >= 5000L) {
+                            send(server, sender, TextFormatting.RED + String.format(
+                                    "[WorldFlow StallDetector] Stall detected! In-Flight: 0, QueueDepth: 0, Unpublished: %d for 5s. Dumping stuck chunks and force-publishing:",
+                                    unpublished
+                            ));
+                            for (BenchChunkEntry entry : entries) {
+                                if (!entry.future.isDone()) {
+                                    long key = net.minecraft.util.math.ChunkPos.asLong(entry.x, entry.z);
+                                    StatusHolder holder = GenerationScheduler.getInstance().getInFlight(key);
+                                    if (holder != null) {
+                                        boolean ownDone = holder.isOwnDecorationDone();
+                                        int pendingWriters = holder.getPendingWriters();
+                                        List<net.minecraft.util.math.ChunkPos> owedBy = GenerationScheduler.getInstance().getOwedBy(holder);
+                                        send(server, sender, TextFormatting.RED + String.format(
+                                                "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=%b pendingWriters=%d owed by: %s",
+                                                entry.x, entry.z, ownDone, pendingWriters, owedBy
+                                        ));
+                                        if (holder.markPublishEnqueued()) {
+                                            PublishManager.INSTANCE.publishChunk(world, holder);
+                                        }
+                                        if (holder.getFuture().isDone()) {
+                                            try {
+                                                entry.future.complete(holder.getFuture().getNow(null));
+                                            } catch (Throwable ignored) {}
+                                        }
+                                    } else {
+                                        Chunk loaded = world.getChunkProvider().getLoadedChunk(entry.x, entry.z);
+                                        if (loaded == null) {
+                                            loaded = world.getChunkProvider().provideChunk(entry.x, entry.z);
+                                        }
+                                        send(server, sender, TextFormatting.RED + String.format(
+                                                "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=true pendingWriters=0 owed by: [] (recovered via provider)",
+                                                entry.x, entry.z
+                                        ));
+                                        entry.future.complete(loaded);
+                                    }
+                                    GenerationScheduler.getInstance().notifyNeighboursOfCompletion(entry.x, entry.z);
+                                }
+                            }
+                            stallStartTimeMs = now;
+                        }
+                    } else {
+                        stallStartTimeMs = -1L;
+                    }
+
+                    // Timeout detector: at 3x expected duration, dump stall info and report partial results
+                    if (now - startTimeMs > timeoutMs) {
+                        timedOut = true;
+                        send(server, sender, TextFormatting.RED + String.format(
+                                "[WorldFlow Bench] TIMEOUT reached after %.1fs (limit %.1fs, completed %d/%d)! Dumping stuck chunks and reporting partial results:",
+                                (now - startTimeMs) / 1000.0, timeoutMs / 1000.0, completed, totalChunks
+                        ));
+                        for (BenchChunkEntry entry : entries) {
+                            if (!entry.future.isDone()) {
+                                long key = net.minecraft.util.math.ChunkPos.asLong(entry.x, entry.z);
+                                StatusHolder holder = GenerationScheduler.getInstance().getInFlight(key);
+                                if (holder != null) {
+                                    boolean ownDone = holder.isOwnDecorationDone();
+                                    int pendingWriters = holder.getPendingWriters();
+                                    List<net.minecraft.util.math.ChunkPos> owedBy = GenerationScheduler.getInstance().getOwedBy(holder);
+                                    send(server, sender, TextFormatting.RED + String.format(
+                                            "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=%b pendingWriters=%d owed by: %s",
+                                            entry.x, entry.z, ownDone, pendingWriters, owedBy
+                                    ));
+                                } else {
+                                    send(server, sender, TextFormatting.RED + String.format(
+                                            "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=unknown pendingWriters=0 owed by: [] (not in flight)",
+                                            entry.x, entry.z
+                                    ));
+                                }
+                            }
+                        }
+                        break;
+                    }
+
                     if (now - lastLogMs >= 5000L) {
                         lastLogMs = now;
                         double elapsedSec = Math.max(1.0, (now - startTimeMs) / 1000.0);
                         double pct = (completed * 100.0) / totalChunks;
                         double currentRate = completed / elapsedSec;
                         send(server, sender, TextFormatting.AQUA + String.format(
-                                "[WorldFlow Bench] Progress: %d/%d (%.1f%%) | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Elapsed: %.1fs",
+                                "[WorldFlow Bench] Progress: %d/%d (%.1f%%) | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Guards blocked: %d | Elapsed: %.1fs",
                                 completed, totalChunks, pct, currentRate,
                                 GenerationScheduler.getInstance().getInFlightCount(),
                                 GenerationWorkerPool.getInstance().getQueueSize(),
+                                GenerationScheduler.getInstance().getGuardsBlockedCount(),
                                 elapsedSec
                         ));
                     }
@@ -130,7 +229,13 @@ public class BenchmarkRunner {
                 long deltaFeatCount = GenerationScheduler.getInstance().getTotalFeaturesCount() - startFeatCount;
                 long deltaFeatNanos = GenerationScheduler.getInstance().getTotalFeaturesNanos() - startFeatNanos;
 
-                long totalGenerated = deltaPipeline > 0 ? deltaPipeline : totalChunks;
+                int finalCompleted = 0;
+                for (BenchChunkEntry entry : entries) {
+                    if (entry.future.isDone()) {
+                        finalCompleted++;
+                    }
+                }
+                long totalGenerated = deltaPipeline > 0 ? deltaPipeline : (timedOut ? finalCompleted : totalChunks);
                 double chunksPerSec = totalGenerated / elapsedSec;
                 double chunksPerMin = chunksPerSec * 60.0;
                 double avgBaseMs = deltaBaseGenCount > 0 ? (deltaBaseGenNanos / 1_000_000.0) / deltaBaseGenCount : 0.0;
@@ -208,6 +313,18 @@ public class BenchmarkRunner {
             server.addScheduledTask(() -> sender.sendMessage(new TextComponentString(message)));
         } else {
             sender.sendMessage(new TextComponentString(message));
+        }
+    }
+
+    private static class BenchChunkEntry {
+        final int x;
+        final int z;
+        final CompletableFuture<Chunk> future;
+
+        BenchChunkEntry(int x, int z, CompletableFuture<Chunk> future) {
+            this.x = x;
+            this.z = z;
+            this.future = future;
         }
     }
 }

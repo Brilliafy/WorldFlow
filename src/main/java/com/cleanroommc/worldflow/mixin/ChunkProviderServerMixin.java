@@ -92,8 +92,7 @@ public abstract class ChunkProviderServerMixin {
                 }
             } catch (Throwable ignored) {
             }
-            // Timed out: remove in-flight holder to prevent conflict with inline generation
-            GenerationScheduler.getInstance().removeInFlight(key);
+            // Timed out waiting for worker: allow vanilla provideChunk to proceed inline
         }
 
         // 4. Synchronous callers (Chunk-Pregenerator, commands, /otg, etc.) bypass
@@ -105,11 +104,26 @@ public abstract class ChunkProviderServerMixin {
     @Inject(method = "provideChunk(II)Lnet/minecraft/world/chunk/Chunk;", at = @At("RETURN"))
     private void worldflow$afterProvideChunk(int x, int z, CallbackInfoReturnable<Chunk> cir) {
         Chunk chunk = cir.getReturnValue();
-        if (chunk instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) {
-            com.cleanroommc.worldflow.pipeline.IWorldFlowChunk wfChunk = (com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) chunk;
-            if (wfChunk.worldflow$getGenPath() == com.cleanroommc.worldflow.pipeline.IWorldFlowChunk.GenPath.UNKNOWN) {
-                wfChunk.worldflow$setGenPath(com.cleanroommc.worldflow.pipeline.IWorldFlowChunk.GenPath.INLINE);
-                GenerationScheduler.getInstance().totalChunksInline.incrementAndGet();
+        if (chunk != null) {
+            long key = ChunkPos.asLong(x, z);
+            StatusHolder holder = GenerationScheduler.getInstance().getInFlight(key);
+            if (holder != null && !holder.isDone()) {
+                holder.getProtoChunk().setUnderlyingChunk(chunk);
+                holder.getProtoChunk().setTerrainPopulated(true);
+                holder.setCurrentStatus(com.cleanroommc.worldflow.pipeline.ChunkStatus.FULL);
+                holder.setOwnDecorationDone(true);
+                holder.getCarversFuture().complete(chunk);
+                holder.getWorkerDoneFuture().complete(chunk);
+                holder.getFuture().complete(chunk);
+                GenerationScheduler.getInstance().removeInFlight(key);
+                GenerationScheduler.getInstance().notifyNeighboursOfCompletion(x, z);
+            }
+            if (chunk instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) {
+                com.cleanroommc.worldflow.pipeline.IWorldFlowChunk wfChunk = (com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) chunk;
+                if (wfChunk.worldflow$getGenPath() == com.cleanroommc.worldflow.pipeline.IWorldFlowChunk.GenPath.UNKNOWN) {
+                    wfChunk.worldflow$setGenPath(com.cleanroommc.worldflow.pipeline.IWorldFlowChunk.GenPath.INLINE);
+                    GenerationScheduler.getInstance().totalChunksInline.incrementAndGet();
+                }
             }
         }
     }

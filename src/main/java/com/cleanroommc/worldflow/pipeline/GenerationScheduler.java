@@ -65,7 +65,6 @@ public class GenerationScheduler {
 
     public final AtomicLong guardsBlockedCount = new AtomicLong(0);
     private final ConcurrentHashMap<String, AtomicLong> serializedGeneratorCounts = new ConcurrentHashMap<>();
-    private final Object writerGraphLock = new Object();
 
     // Deadlock Watchdog tracking
     private final AtomicLong watchdogLastPublished = new AtomicLong(0);
@@ -95,54 +94,90 @@ public class GenerationScheduler {
     }
 
     public void registerPendingWriters(StatusHolder holder) {
-        if (holder == null || holder.getTargetStatus() != ChunkStatus.FULL) {
-            return;
+        // No-op in pure-predicate publish architecture: publish readiness is evaluated on demand via canPublish()
+    }
+
+    public boolean canPublish(StatusHolder holder) {
+        if (holder == null || !holder.isOwnDecorationDone()) {
+            return false;
         }
         int cx = holder.getPos().x;
         int cz = holder.getPos().z;
-        synchronized (this.writerGraphLock) {
-            for (int dx = -1; dx <= 1; dx++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    if (dx == 0 && dz == 0) continue;
-                    long nKey = ChunkPos.asLong(cx + dx, cz + dz);
-                    StatusHolder nHolder = this.inFlight.get(nKey);
-                    if (nHolder != null && nHolder.getTargetStatus() == ChunkStatus.FULL && !nHolder.isOwnDecorationDone()) {
-                        holder.incrementPendingWriters();
-                        nHolder.incrementPendingWriters();
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                long nKey = ChunkPos.asLong(cx + dx, cz + dz);
+                StatusHolder nHolder = this.inFlight.get(nKey);
+                if (nHolder != null) {
+                    if (nHolder.getTargetStatus() == ChunkStatus.FULL && !nHolder.isOwnDecorationDone() && !nHolder.isDone()) {
+                        return false;
                     }
+                    continue;
+                }
+                StatusHolder pending = this.pendingRequests.get(nKey);
+                if (pending != null && pending.getTargetStatus() == ChunkStatus.FULL && !pending.isOwnDecorationDone() && !pending.isDone()) {
+                    return false;
                 }
             }
         }
+        return true;
+    }
+
+    public List<ChunkPos> getOwedBy(StatusHolder holder) {
+        if (holder == null) {
+            return java.util.Collections.emptyList();
+        }
+        List<ChunkPos> owed = new ArrayList<>();
+        int cx = holder.getPos().x;
+        int cz = holder.getPos().z;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                long nKey = ChunkPos.asLong(cx + dx, cz + dz);
+                StatusHolder nHolder = this.inFlight.get(nKey);
+                if (nHolder != null) {
+                    if (nHolder.getTargetStatus() == ChunkStatus.FULL && !nHolder.isOwnDecorationDone() && !nHolder.isDone()) {
+                        owed.add(nHolder.getPos());
+                    }
+                    continue;
+                }
+                StatusHolder pending = this.pendingRequests.get(nKey);
+                if (pending != null && pending.getTargetStatus() == ChunkStatus.FULL && !pending.isOwnDecorationDone() && !pending.isDone()) {
+                    owed.add(pending.getPos());
+                }
+            }
+        }
+        return owed;
+    }
+
+    public int getPendingWritersCount(StatusHolder holder) {
+        return getOwedBy(holder).size();
     }
 
     public void completeWriter(StatusHolder holder) {
         if (holder == null) return;
-        List<StatusHolder> readyToPublish = new ArrayList<>();
-        synchronized (this.writerGraphLock) {
-            holder.setOwnDecorationDone(true);
-            int remaining = holder.decrementPendingWriters();
-            if (remaining <= 0) {
-                readyToPublish.add(holder);
+        holder.setOwnDecorationDone(true);
+        if (canPublish(holder)) {
+            if (holder.markPublishEnqueued()) {
+                PublishManager.INSTANCE.enqueueReady(holder);
             }
-            int cx = holder.getPos().x;
-            int cz = holder.getPos().z;
-            for (int dx = -1; dx <= 1; dx++) {
-                for (int dz = -1; dz <= 1; dz++) {
-                    if (dx == 0 && dz == 0) continue;
-                    long nKey = ChunkPos.asLong(cx + dx, cz + dz);
-                    StatusHolder nHolder = this.inFlight.get(nKey);
-                    if (nHolder != null) {
-                        int nRemaining = nHolder.decrementPendingWriters();
-                        if (nRemaining <= 0 && nHolder.isOwnDecorationDone()) {
-                            readyToPublish.add(nHolder);
+        }
+        notifyNeighboursOfCompletion(holder.getPos().x, holder.getPos().z);
+    }
+
+    public void notifyNeighboursOfCompletion(int cx, int cz) {
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                long nKey = ChunkPos.asLong(cx + dx, cz + dz);
+                StatusHolder nHolder = this.inFlight.get(nKey);
+                if (nHolder != null && nHolder.isOwnDecorationDone() && !nHolder.isDone()) {
+                    if (canPublish(nHolder)) {
+                        if (nHolder.markPublishEnqueued()) {
+                            PublishManager.INSTANCE.enqueueReady(nHolder);
                         }
                     }
                 }
-            }
-        }
-        for (StatusHolder ready : readyToPublish) {
-            if (ready.markPublishEnqueued()) {
-                PublishManager.INSTANCE.enqueueReady(ready);
             }
         }
     }
@@ -586,7 +621,6 @@ public class GenerationScheduler {
     }
 
     private void fallbackToMainThreadSerial(StatusHolder holder) {
-        completeWriter(holder);
         WorldServer world = holder.getWorld();
         ChunkPos pos = holder.getPos();
         world.addScheduledTask(() -> {
@@ -594,28 +628,34 @@ public class GenerationScheduler {
                 Chunk loaded = world.getChunkProvider().getLoadedChunk(pos.x, pos.z);
                 if (loaded != null) {
                     holder.setCurrentStatus(ChunkStatus.FULL);
+                    holder.setOwnDecorationDone(true);
                     holder.getCarversFuture().complete(loaded);
                     holder.getWorkerDoneFuture().complete(loaded);
                     holder.getFuture().complete(loaded);
                     removeInFlight(holder.getChunkKey());
+                    notifyNeighboursOfCompletion(pos.x, pos.z);
                     return;
                 }
                 Chunk chunk = world.getChunkProvider().provideChunk(pos.x, pos.z);
                 holder.getProtoChunk().setUnderlyingChunk(chunk);
                 holder.getProtoChunk().setTerrainPopulated(true);
+                holder.setOwnDecorationDone(true);
                 holder.getCarversFuture().complete(chunk);
                 holder.getWorkerDoneFuture().complete(chunk);
                 PublishManager.INSTANCE.publishChunk(world, holder);
+                notifyNeighboursOfCompletion(pos.x, pos.z);
             } catch (Throwable fallbackErr) {
                 WorldFlow.LOGGER.error("[WorldFlow] Main-thread serial fallback failed for chunk [{}, {}]", pos.x, pos.z, fallbackErr);
                 Chunk fallbackChunk = holder.getProtoChunk().getChunk();
                 if (fallbackChunk == null) {
                     fallbackChunk = new Chunk(world, pos.x, pos.z);
                 }
+                holder.setOwnDecorationDone(true);
                 holder.getCarversFuture().complete(fallbackChunk);
                 holder.getWorkerDoneFuture().complete(fallbackChunk);
                 holder.getFuture().complete(fallbackChunk);
                 removeInFlight(holder.getChunkKey());
+                notifyNeighboursOfCompletion(pos.x, pos.z);
             }
         });
     }
@@ -703,67 +743,27 @@ public class GenerationScheduler {
             return;
         }
 
-        if (inFlightCount == 0) {
-            this.watchdogLastProgressTime.set(now);
-            this.watchdogTriggered.set(false);
-            return;
-        }
-
         long stallDuration = now - this.watchdogLastProgressTime.get();
-        if (stallDuration > 20000L) {
-            if (this.watchdogTriggered.compareAndSet(false, true)) {
-                WorldFlow.LOGGER.warn("================================================================================");
-                WorldFlow.LOGGER.warn("[WorldFlow Watchdog] POTENTIAL PIPELINE STALL DETECTED! No chunks published for {} ms with {} chunks in-flight!", stallDuration, inFlightCount);
-                WorldFlow.LOGGER.warn("=== IN-FLIGHT GENERATIONS ({}) ===", inFlightCount);
+        if (stallDuration >= 5000L) {
+            if (inFlightCount > 0) {
                 for (StatusHolder h : this.inFlight.values()) {
                     long ageMs = (System.nanoTime() - h.getSubmissionTimeNanos()) / 1_000_000L;
-                    WorldFlow.LOGGER.warn("  Chunk [{}, {}] | Current: {} | Target: {} | Age: {} ms | CarversDone: {} | WorkerDone: {} | FutureDone: {}",
-                            h.getPos().x, h.getPos().z, h.getCurrentStatus(), h.getTargetStatus(), ageMs,
-                            h.getCarversFuture().isDone(), h.isWorkerDone(), h.getFuture().isDone());
-                }
-                WorldFlow.LOGGER.warn("=== THREAD POOL METRICS ===");
-                WorldFlow.LOGGER.warn("  BaseGen Pool: Active={}, QueueSize={}",
-                        GenerationWorkerPool.getInstance().getBaseGenActiveCount(),
-                        GenerationWorkerPool.getInstance().getBaseGenQueueSize());
-                WorldFlow.LOGGER.warn("  Features Pool: Active={}, QueueSize={}",
-                        GenerationWorkerPool.getInstance().getFeaturesActiveCount(),
-                        GenerationWorkerPool.getInstance().getFeaturesQueueSize());
-                WorldFlow.LOGGER.warn("  GenLever Pool: Active={}, QueueSize={}",
-                        GenerationWorkerPool.getInstance().getLeverActiveCount(),
-                        GenerationWorkerPool.getInstance().getLeverQueueSize());
-                WorldFlow.LOGGER.warn("  Publish Queue: PendingReady={}", PublishManager.INSTANCE.getPendingCount());
-                WorldFlow.LOGGER.warn("=== THREAD STATES ===");
-                for (Thread t : Thread.getAllStackTraces().keySet()) {
-                    String name = t.getName();
-                    if (name.startsWith("WorldFlow-") || name.equals("Server thread")) {
-                        WorldFlow.LOGGER.warn("  Thread '{}' (State: {}):", name, t.getState());
-                        StackTraceElement[] stack = t.getStackTrace();
-                        int limit = Math.min(6, stack.length);
-                        for (int i = 0; i < limit; i++) {
-                            WorldFlow.LOGGER.warn("    at {}", stack[i]);
-                        }
-                    }
-                }
-                WorldFlow.LOGGER.warn("================================================================================");
-            }
-
-            // Self-healing: if stalled for > 35s, unfreeze stuck chunks
-            if (stallDuration > 35000L) {
-                for (StatusHolder h : this.inFlight.values()) {
-                    long ageMs = (System.nanoTime() - h.getSubmissionTimeNanos()) / 1_000_000L;
-                    if (ageMs > 30000L && !h.isDone()) {
-                        if (h.isOwnDecorationDone() && h.getPendingWriters() > 0) {
-                            WorldFlow.LOGGER.warn("[WorldFlow Watchdog] Forcing publication of stuck chunk [{}, {}] (pending writers={})",
-                                    h.getPos().x, h.getPos().z, h.getPendingWriters());
+                    if (ageMs > 5000L && !h.isDone()) {
+                        WorldFlow.LOGGER.warn(String.format(
+                                "[WorldFlow StallDetector] Stuck chunk [%d,%d] ownDone=%b pendingWriters=%d owed by: %s",
+                                h.getPos().x, h.getPos().z, h.isOwnDecorationDone(), h.getPendingWriters(), getOwedBy(h)
+                        ));
+                        if (h.isOwnDecorationDone()) {
                             if (h.markPublishEnqueued()) {
                                 PublishManager.INSTANCE.enqueueReady(h);
                             }
                         } else {
-                            WorldFlow.LOGGER.warn("[WorldFlow Watchdog] Unfreezing stuck chunk [{}, {}] via serial fallback", h.getPos().x, h.getPos().z);
                             fallbackToMainThreadSerial(h);
                         }
                     }
                 }
+            } else if (!this.pendingRequests.isEmpty()) {
+                drainPendingRequests();
             }
         }
     }
@@ -831,7 +831,7 @@ public class GenerationScheduler {
         int queueDepth = PublishManager.INSTANCE.getPendingCount();
 
         WorldFlow.LOGGER.info(String.format(
-                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | Serialized: %d | Parallel: %d | Guards Blocked: %d | Active Workers: %d",
+                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | Serialized: %d | Parallel: %d | Guards blocked: %d | Active Workers: %d",
                 chunksPerSec,
                 chunksPerMin,
                 totalPublished,
