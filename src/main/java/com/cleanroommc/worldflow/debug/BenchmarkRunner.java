@@ -37,7 +37,8 @@ public class BenchmarkRunner {
         if (workers > 0) {
             GenerationWorkerPool.getInstance().setWorkerThreads(workers);
         }
-        int effectiveWorkers = GenerationWorkerPool.effectiveThreads();
+        int effectiveWorkers = GenerationWorkerPool.getInstance().getBaseGenWorkerCount()
+                + GenerationWorkerPool.getInstance().getFeaturesWorkerCount();
 
         int totalChunks = (2 * radius + 1) * (2 * radius + 1);
         send(server, sender, TextFormatting.GOLD + String.format(
@@ -263,7 +264,7 @@ public class BenchmarkRunner {
                         double pct = (completed * 100.0) / totalChunks;
                         double currentRate = completed / elapsedSec;
                         send(server, sender, TextFormatting.AQUA + String.format(
-                                "[WorldFlow Bench] Progress: %d/%d (%.1f%%) | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Workers: base=%d feat=%d (auto) | Guards blocked: %d | Elapsed: %.1fs",
+                                "[WorldFlow Bench] Progress: %d/%d (%.1f%%) | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Workers: base=%d feat=%d | Guards blocked: %d | Elapsed: %.1fs",
                                 completed, totalChunks, pct, currentRate,
                                 GenerationScheduler.getInstance().getInFlightCount(),
                                 GenerationWorkerPool.getInstance().getQueueSize(),
@@ -295,6 +296,8 @@ public class BenchmarkRunner {
             } finally {
                 finished.set(true);
                 RUNNING.set(false);
+                // Hand control back to the autoscaler now that the deterministic run is over.
+                GenerationWorkerPool.getInstance().enableAutoscale();
             }
         }, "WorldFlow-Benchmark");
 
@@ -367,7 +370,7 @@ public class BenchmarkRunner {
         long seed = world.getSeed();
         send(server, sender, TextFormatting.GOLD + (timedOut ? "=== WorldFlow Pipeline Benchmark PARTIAL Results (TIMED OUT) ===" : "=== WorldFlow Pipeline Benchmark Results ==="));
         send(server, sender, TextFormatting.GREEN + String.format(
-                "Area: radius %d (%d chunks) | Workers: base=%d feat=%d (auto) | Center: [%d, %d] | Seed: %d",
+                "Area: radius %d (%d chunks) | Workers: base=%d feat=%d | Center: [%d, %d] | Seed: %d",
                 radius, totalChunks,
                 GenerationWorkerPool.getInstance().getBaseGenWorkerCount(),
                 GenerationWorkerPool.getInstance().getFeaturesWorkerCount(),

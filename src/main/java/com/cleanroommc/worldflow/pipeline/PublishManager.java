@@ -26,7 +26,37 @@ public class PublishManager {
     public static final PublishManager INSTANCE = new PublishManager();
 
     private final Queue<StatusHolder> pendingPublishQueue = new ConcurrentLinkedQueue<>();
+    private final Queue<TePurge> tePurgeQueue = new ConcurrentLinkedQueue<>();
     public final AtomicLong totalChunksPublished = new AtomicLong(0);
+
+    private static final class TePurge {
+        final WorldServer world;
+        final net.minecraft.util.math.BlockPos pos;
+
+        TePurge(WorldServer world, net.minecraft.util.math.BlockPos pos) {
+            this.world = world;
+            this.pos = pos;
+        }
+    }
+
+    /** Worker threads cannot touch World.loadedTileEntityList; queue the removal for the tick thread. */
+    public void enqueueTileEntityPurge(WorldServer world, net.minecraft.util.math.BlockPos pos) {
+        if (world != null && pos != null && this.tePurgeQueue.size() < 4096) {
+            this.tePurgeQueue.add(new TePurge(world, pos));
+        }
+    }
+
+    private void drainTileEntityPurges() {
+        TePurge purge;
+        int budget = 256;
+        while (budget-- > 0 && (purge = this.tePurgeQueue.poll()) != null) {
+            final TePurge p = purge;
+            try {
+                p.world.loadedTileEntityList.removeIf(te -> te != null && p.pos.equals(te.getPos()));
+            } catch (Throwable ignored) {
+            }
+        }
+    }
 
     private PublishManager() {
     }
@@ -47,6 +77,8 @@ public class PublishManager {
      */
     public int tick(WorldServer world, int maxBudget) {
         CascadeBlockBuffer.INSTANCE.flushStagedEntitiesForLoadedChunks(world);
+        drainTileEntityPurges();
+        tileEntityHygiene(world);
         GenerationScheduler.getInstance().sweepPublishableIfDirty();
         if (this.pendingPublishQueue.isEmpty()) {
             return 0;
@@ -87,6 +119,7 @@ public class PublishManager {
         long key = holder.getChunkKey();
         int cx = holder.getPos().x;
         int cz = holder.getPos().z;
+        holder.resetPublishEnqueued();
 
         // 1. Invalidation / Supersede Check: Check if already loaded in RAM
         Chunk existing = world.getChunkProvider().getLoadedChunk(cx, cz);
@@ -114,20 +147,22 @@ public class PublishManager {
             synchronized (world.getChunkProvider().loadedChunks) {
                 world.getChunkProvider().loadedChunks.put(key, chunk);
             }
-            chunk.onLoad();
 
             // 3. Flush any staged blocks that were waiting for this chunk
             CascadeBlockBuffer.INSTANCE.flushChunk(world, chunk);
 
-            // 4. Tick-thread lighting calculation + neighbour border relight to prevent black seams
+            // 3b. Tile-entity atomicity: a TE whose block does not support one (or was replaced
+            //     by a structure write, e.g. bedrock) crashes mods on the next tick
+            //     (rustic cabinets on bedrock + nuclearcraft radiation scan). Drop them before
+            //     onLoad() registers the chunk's TEs into World.loadedTileEntityList.
+            sanitizeTileEntities(world, chunk);
+
+            chunk.onLoad();
+
+            // 4. Tick-thread lighting for the new chunk. Neighbour relighting was dropped: it
+            //    cost ~5x the chunk's own light pass and pregen has no players to see seams.
             try {
                 chunk.checkLight();
-                for (int[] offset : new int[][]{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) {
-                    Chunk neighbour = world.getChunkProvider().getLoadedChunk(cx + offset[0], cz + offset[1]);
-                    if (neighbour != null) {
-                        neighbour.checkLight();
-                    }
-                }
             } catch (Throwable t) {
                 WorldFlow.LOGGER.debug("[WorldFlow] Light check exception on chunk [{}, {}]", cx, cz, t);
             }
@@ -182,6 +217,82 @@ public class PublishManager {
             // 8. Cleanup from in-flight tracker and notify neighbours
             GenerationScheduler.getInstance().removeInFlight(key);
             GenerationScheduler.getInstance().notifyNeighboursOfCompletion(cx, cz);
+        }
+    }
+
+    /**
+     * Removes tile entities that cannot legally exist at their position.
+     * A TE must never outlive the block that owns it: mods iterate these maps during tick
+     * (nuclearcraft radiation, hoppers, capabilities) and throw if the block state changed.
+     */
+    private void sanitizeTileEntities(WorldServer world, Chunk chunk) {
+        try {
+            java.util.Iterator<java.util.Map.Entry<net.minecraft.util.math.BlockPos, net.minecraft.tileentity.TileEntity>> it =
+                    chunk.getTileEntityMap().entrySet().iterator();
+            int removed = 0;
+            while (it.hasNext()) {
+                java.util.Map.Entry<net.minecraft.util.math.BlockPos, net.minecraft.tileentity.TileEntity> e = it.next();
+                if (e.getValue() == null) {
+                    it.remove();
+                    continue;
+                }
+                net.minecraft.block.state.IBlockState state = chunk.getBlockState(e.getKey());
+                if (!state.getBlock().hasTileEntity(state)) {
+                    it.remove();
+                    final net.minecraft.util.math.BlockPos badPos = e.getKey();
+                    world.loadedTileEntityList.removeIf(te -> te != null && badPos.equals(te.getPos()));
+                    removed++;
+                }
+            }
+            if (removed > 0) {
+                WorldFlow.LOGGER.warn("[WorldFlow] Dropped {} orphaned tile entit{} from chunk [{}, {}] (block no longer supports one)",
+                        removed, removed == 1 ? "y" : "ies", chunk.x, chunk.z);
+            }
+        } catch (Throwable t) {
+            WorldFlow.LOGGER.debug("[WorldFlow] TE sanitize failed for chunk [{}, {}]", chunk.x, chunk.z, t);
+        }
+    }
+
+    /** Called from the world-tick START hook (highest priority) before any mod scans TEs. */
+    public void maintainTileEntities(WorldServer world) {
+        drainTileEntityPurges();
+        tileEntityHygiene(world);
+    }
+
+    private int hygieneTickCounter = 0;
+
+    /**
+     * Safety net for tile entities that end up on impossible blocks through paths we do not
+     * intercept (mods calling Chunk.addTileEntity directly, staged structure writes, plugins).
+     * Runs on the main thread every 5s; mods like nuclearcraft iterate this exact list and crash.
+     */
+    private void tileEntityHygiene(WorldServer world) {
+        // Run every tick: the server thread may add a TE and a later write in the same tick can
+        // replace its block, and nuclearcraft scans at the very start of the next tick.
+        try {
+            int removed = 0;
+            java.util.Iterator<net.minecraft.tileentity.TileEntity> it = world.loadedTileEntityList.iterator();
+            while (it.hasNext()) {
+                net.minecraft.tileentity.TileEntity te = it.next();
+                if (te == null || te.isInvalid()) {
+                    it.remove();
+                    continue;
+                }
+                net.minecraft.util.math.BlockPos pos = te.getPos();
+                if (!world.isBlockLoaded(pos)) {
+                    continue;
+                }
+                net.minecraft.block.state.IBlockState state = world.getBlockState(pos);
+                if (state != null && !state.getBlock().hasTileEntity(state)) {
+                    it.remove();
+                    removed++;
+                }
+            }
+            if (removed > 0) {
+                WorldFlow.LOGGER.warn("[WorldFlow] TE hygiene: dropped {} tile entities sitting on unsupported blocks", removed);
+            }
+        } catch (Throwable t) {
+            WorldFlow.LOGGER.debug("[WorldFlow] TE hygiene pass failed", t);
         }
     }
 

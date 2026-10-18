@@ -99,12 +99,24 @@ public abstract class ChunkProviderServerMixin {
                 return;
             }
 
-            // In flight: bump priority to IMMEDIATE and park main thread on future (no 50ms timeout!)
+            // In flight: bump priority and pump the pipeline while waiting. The old 60s blind
+            // park deadlocked the server whenever a hand-off was lost; pumping self-heals it
+            // within milliseconds and keeps the worker pools fed.
             holder.bumpPriority(com.cleanroommc.worldflow.pipeline.GenerationPriority.IMMEDIATE);
             com.cleanroommc.worldflow.pipeline.ServerStallWatchdog.recordMainThreadWaitStart(x, z);
+            long deadline = System.currentTimeMillis() + 10000L;
             try {
-                // Main thread parks on pipeline future (up to 60s)
-                holder.getWorkerDoneFuture().get(60, java.util.concurrent.TimeUnit.SECONDS);
+                while (!holder.isWorkerDone() && !holder.isDone() && System.currentTimeMillis() < deadline) {
+                    GenerationScheduler.getInstance().pump(holder);
+                    if (holder.isWorkerDone() || holder.isDone()) {
+                        break;
+                    }
+                    try {
+                        holder.getWorkerDoneFuture().get(4L, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    } catch (java.util.concurrent.TimeoutException expected) {
+                        // not ready yet - loop and pump again
+                    }
+                }
             } catch (Throwable t) {
                 com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] Main thread wait on chunk [{}, {}] finished with: {}", x, z, t.toString());
             } finally {

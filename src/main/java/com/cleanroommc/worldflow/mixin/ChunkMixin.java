@@ -72,6 +72,52 @@ public abstract class ChunkMixin implements IWorldFlowChunk {
     @Final
     private World world;
 
+    @Inject(method = "addTileEntity(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/tileentity/TileEntity;)V",
+            at = @At("HEAD"),
+            cancellable = true)
+    private void worldflow$guardAddTileEntity(net.minecraft.util.math.BlockPos pos, net.minecraft.tileentity.TileEntity tileEntity,
+                                              CallbackInfo ci) {
+        if (tileEntity == null) {
+            return;
+        }
+        // Final net: mods/structures sometimes add a TE directly to the chunk. If the block at
+        // that position cannot own one (e.g. bedrock), refuse - otherwise the world TE list
+        // carries a stale entry that crashes nuclearcraft/rustic on the next tick.
+        net.minecraft.block.state.IBlockState state = ((Chunk) (Object) this).getBlockState(pos);
+        if (state != null && state.getBlock() != net.minecraft.init.Blocks.AIR
+                && !state.getBlock().hasTileEntity(state)) {
+            ci.cancel();
+        }
+    }
+
+    @Inject(method = "setBlockState(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/state/IBlockState;)Lnet/minecraft/block/state/IBlockState;",
+            at = @At("RETURN"))
+    private void worldflow$purgeOrphanedTileEntity(net.minecraft.util.math.BlockPos pos, net.minecraft.block.state.IBlockState newState,
+                                                   CallbackInfoReturnable<net.minecraft.block.state.IBlockState> cir) {
+        if (newState == null) {
+            return;
+        }
+        if (newState.getBlock().hasTileEntity(newState)) {
+            return;
+        }
+        // A TE must never outlive its block: mods tick these maps and crash on stale entries
+        // (rustic cabinet on bedrock + nuclearcraft radiation scan). This also applies to
+        // worker-thread flushes of staged structure blocks, so the check is unconditional.
+        Chunk self = (Chunk) (Object) this;
+        if (self.getTileEntityMap().containsKey(pos)) {
+            self.removeTileEntity(pos);
+            if (this.world instanceof WorldServer) {
+                WorldServer ws = (WorldServer) this.world;
+                if (ws.isCallingFromMinecraftThread()) {
+                    ws.loadedTileEntityList.removeIf(te -> te != null && pos.equals(te.getPos()));
+                } else {
+                    // World list is main-thread only; hand the cleanup over.
+                    com.cleanroommc.worldflow.pipeline.PublishManager.INSTANCE.enqueueTileEntityPurge(ws, pos);
+                }
+            }
+        }
+    }
+
     @Inject(method = "populate(Lnet/minecraft/world/gen/IChunkGenerator;)V", at = @At("HEAD"))
     private void cascadeFix$onChunkPopulateHead(IChunkGenerator generator, CallbackInfo ci) {
         if (!com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {

@@ -1,5 +1,6 @@
 package com.cleanroommc.worldflow.mixin;
 
+import com.cleanroommc.worldflow.WorldFlow;
 import com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer;
 import com.cleanroommc.worldflow.cascade.staging.GenerationContext;
 import com.cleanroommc.worldflow.config.ModConfig;
@@ -149,18 +150,55 @@ public abstract class WorldMixin {
         }
     }
 
+    @Inject(method = "addTileEntity(Lnet/minecraft/tileentity/TileEntity;)V",
+            at = @At("HEAD"),
+            cancellable = true,
+            remap = false)
+    private void worldflow$guardWorldAddTileEntity(TileEntity tileEntity, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (tileEntity == null || this.isRemote) {
+            return;
+        }
+        BlockPos pos = tileEntity.getPos();
+        if (pos == null) {
+            return;
+        }
+        World world = (World) (Object) this;
+        IBlockState state = world.getBlockState(pos);
+        if (state != null && state.getBlock() != net.minecraft.init.Blocks.AIR
+                && !state.getBlock().hasTileEntity(state)) {
+            WorldFlow.LOGGER.debug("[WorldFlow] Blocked world TE {} at {} on unsupported block {}",
+                    tileEntity.getClass().getName(), pos, state.getBlock().getRegistryName());
+            ci.cancel();
+        }
+    }
+
     @Inject(method = "setTileEntity(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/tileentity/TileEntity;)V",
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$onSetTileEntity(BlockPos pos, TileEntity tileEntity, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
-        if (!ThreadLocalWorldView.isGenerating()) {
+        if (ThreadLocalWorldView.isGenerating()) {
+            ci.cancel();
+            if (tileEntity == null) {
+                return;
+            }
+            ThreadLocalWorldView.setTileEntity((World) (Object) this, pos, tileEntity);
             return;
         }
-        ci.cancel();
-        if (tileEntity == null) {
+
+        // Main-thread guard: never let a tile entity exist on a block that cannot own one.
+        // Mods (rustic cabinets, nuclearcraft radiation) iterate World.loadedTileEntityList and
+        // throw IllegalArgumentException when the block under the TE changed to e.g. bedrock.
+        if (tileEntity == null || this.isRemote) {
             return;
         }
-        ThreadLocalWorldView.setTileEntity((World) (Object) this, pos, tileEntity);
+        World world = (World) (Object) this;
+        IBlockState state = world.getBlockState(pos);
+        if (state != null && state.getBlock() != net.minecraft.init.Blocks.AIR
+                && !state.getBlock().hasTileEntity(state)) {
+            WorldFlow.LOGGER.debug("[WorldFlow] Blocked tile entity {} at {} on unsupported block {}",
+                    tileEntity.getClass().getName(), pos, state.getBlock().getRegistryName());
+            ci.cancel();
+        }
     }
 
     @Inject(method = "spawnEntity",

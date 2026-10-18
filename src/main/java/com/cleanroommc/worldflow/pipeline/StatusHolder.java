@@ -29,6 +29,12 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     private final java.util.concurrent.atomic.AtomicBoolean ownDecorationDone = new java.util.concurrent.atomic.AtomicBoolean(false);
     private final java.util.concurrent.atomic.AtomicBoolean publishEnqueued = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean baseGenScheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean baseGenRunning = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private volatile long baseGenScheduledAtNanos = 0L;
+    private final java.util.concurrent.atomic.AtomicBoolean featuresScheduled = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean featuresRunning = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private volatile long featuresScheduledAtNanos = 0L;
     private volatile String lastWorkerName = "none";
 
     public StatusHolder(WorldServer world, int x, int z, ChunkStatus targetStatus, GenerationPriority priority) {
@@ -166,6 +172,66 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     public void resetPublishEnqueued() {
         this.publishEnqueued.set(false);
+    }
+
+    /** True exactly once: guards against duplicate BaseGen submissions. */
+    public boolean markBaseGenScheduled() {
+        boolean ok = this.baseGenScheduled.compareAndSet(false, true);
+        if (ok) {
+            this.baseGenScheduledAtNanos = System.nanoTime();
+        }
+        return ok;
+    }
+
+    public void resetBaseGenScheduled() {
+        this.baseGenScheduled.set(false);
+    }
+
+    public boolean isBaseGenScheduled() {
+        return this.baseGenScheduled.get();
+    }
+
+    public void setBaseGenRunning(boolean running) {
+        this.baseGenRunning.set(running);
+    }
+
+    public boolean isBaseGenRunning() {
+        return this.baseGenRunning.get();
+    }
+
+    public long getBaseGenScheduledAtNanos() {
+        return this.baseGenScheduledAtNanos;
+    }
+
+    /** True exactly once: guards against duplicate feature submissions. */
+    public boolean markFeaturesScheduled() {
+        boolean ok = this.featuresScheduled.compareAndSet(false, true);
+        if (ok) {
+            this.featuresScheduledAtNanos = System.nanoTime();
+        }
+        return ok;
+    }
+
+    public boolean isFeaturesScheduled() {
+        return this.featuresScheduled.get();
+    }
+
+    public long getFeaturesScheduledAtNanos() {
+        return this.featuresScheduledAtNanos;
+    }
+
+    /** Allow a retry after a wedged/stuck feature task. */
+    public void resetFeaturesScheduled() {
+        this.featuresScheduled.set(false);
+    }
+
+    /** Set while a feature task is actually executing on a worker. */
+    public void setFeaturesRunning(boolean running) {
+        this.featuresRunning.set(running);
+    }
+
+    public boolean isFeaturesRunning() {
+        return this.featuresRunning.get();
     }
 
     public String getLastWorkerName() {

@@ -6,6 +6,7 @@ import com.cleanroommc.worldflow.config.ModConfig;
 import java.util.Comparator;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntSupplier;
 
 /**
  * Manages thread pools for parallel chunk generation:
@@ -24,10 +25,12 @@ public class GenerationWorkerPool {
     private ScheduledExecutorService scheduler;
     private boolean initialized = false;
 
-    private final AtomicInteger baseGenHighCount = new AtomicInteger(0);
-    private final AtomicInteger baseGenEmptyCount = new AtomicInteger(0);
-    private final AtomicInteger featuresHighCount = new AtomicInteger(0);
-    private final AtomicInteger featuresEmptyCount = new AtomicInteger(0);
+    /** Autoscaling is enabled by default; benchmarks and manual resizes pin it. */
+    private volatile boolean autoscaleEnabled = true;
+    private volatile int manualSplitBase = -1;
+    private volatile int manualSplitFeatures = -1;
+    private volatile int idleTicks = 0;
+    private volatile IntSupplier inFlightSupplier = () -> 0;
 
     public static class PrioritizedTask implements Runnable, Comparable<PrioritizedTask> {
         private final Runnable task;
@@ -73,8 +76,9 @@ public class GenerationWorkerPool {
         }
 
         int maxTotal = getMaxTotalWorkers();
-        int initialBase = Math.max(1, Math.min(2, maxTotal / 2));
-        int initialFeat = Math.max(1, Math.min(2, maxTotal / 2));
+        // Start minimal; the autoscaler ramps to max the moment there is work.
+        int initialBase = 1;
+        int initialFeat = 1;
 
         AtomicInteger baseGenThreadId = new AtomicInteger(1);
         AtomicInteger featuresThreadId = new AtomicInteger(1);
@@ -186,68 +190,78 @@ public class GenerationWorkerPool {
         if (!this.initialized || this.baseGenPool == null || this.featuresPool == null) {
             return;
         }
+        if (!this.autoscaleEnabled || this.manualSplitBase > 0) {
+            return;
+        }
 
+        int cap = getMaxTotalWorkers();
         int currentBase = this.baseGenPool.getCorePoolSize();
         int currentFeat = this.featuresPool.getCorePoolSize();
+
         int baseQueue = this.baseGenPool.getQueue().size();
         int featQueue = this.featuresPool.getQueue().size();
+        int inFlight = this.inFlightSupplier.getAsInt();
 
-        int maxTotal = getMaxTotalWorkers();
+        // Global load: queued work in either pool plus chunks still in the pipeline.
+        // Per-pool "idle" is meaningless here: BaseGen is legitimately idle while Features is busy.
+        int load = baseQueue + featQueue + inFlight;
 
-        // Scaling BaseGen:
-        if (baseQueue > 2 * currentBase) {
-            this.baseGenEmptyCount.set(0);
-            if (this.baseGenHighCount.incrementAndGet() >= 2) {
-                this.baseGenHighCount.set(0);
-                if (currentBase + currentFeat < maxTotal && currentBase < 4) {
-                    int next = currentBase + 1;
-                    resizePool(this.baseGenPool, next);
-                    WorldFlow.LOGGER.info("[WorldFlow Autoscaler] Scaled BaseGen pool: {} -> {} (queue: {})", currentBase, next, baseQueue);
+        if (load <= 0) {
+            this.idleTicks++;
+            // Shrink only after a long quiet period, and never below a small floor.
+            if (this.idleTicks >= 10) {
+                int floor = Math.min(2, Math.max(1, cap / 3));
+                int wantFeat = Math.max(1, floor);
+                int wantBase = Math.max(1, floor);
+                if (currentBase > wantBase || currentFeat > wantFeat) {
+                    resizePool(this.baseGenPool, wantBase);
+                    resizePool(this.featuresPool, wantFeat);
+                    WorldFlow.LOGGER.info("[WorldFlow Autoscaler] idle {}s -> shrink to base={} feat={}", this.idleTicks, wantBase, wantFeat);
                 }
+                this.idleTicks = 0;
             }
-        } else if (baseQueue == 0) {
-            this.baseGenHighCount.set(0);
-            if (this.baseGenEmptyCount.incrementAndGet() >= 5) {
-                this.baseGenEmptyCount.set(0);
-                if (currentBase > 1) {
-                    int next = currentBase - 1;
-                    resizePool(this.baseGenPool, next);
-                    WorldFlow.LOGGER.info("[WorldFlow Autoscaler] Scaled BaseGen pool: {} -> {} (idle)", currentBase, next);
-                }
-            }
-        } else {
-            this.baseGenHighCount.set(0);
-            this.baseGenEmptyCount.set(0);
+            return;
         }
 
-        // Re-read currentBase for features scaling check
-        currentBase = this.baseGenPool.getCorePoolSize();
+        this.idleTicks = 0;
 
-        // Scaling Features:
-        if (featQueue > 2 * currentFeat) {
-            this.featuresEmptyCount.set(0);
-            if (this.featuresHighCount.incrementAndGet() >= 2) {
-                this.featuresHighCount.set(0);
-                if (currentBase + currentFeat < maxTotal && currentFeat < 4) {
-                    int next = currentFeat + 1;
-                    resizePool(this.featuresPool, next);
-                    WorldFlow.LOGGER.info("[WorldFlow Autoscaler] Scaled Features pool: {} -> {} (queue: {})", currentFeat, next, featQueue);
-                }
-            }
-        } else if (featQueue == 0) {
-            this.featuresHighCount.set(0);
-            if (this.featuresEmptyCount.incrementAndGet() >= 5) {
-                this.featuresEmptyCount.set(0);
-                if (currentFeat > 1) {
-                    int next = currentFeat - 1;
-                    resizePool(this.featuresPool, next);
-                    WorldFlow.LOGGER.info("[WorldFlow Autoscaler] Scaled Features pool: {} -> {} (idle)", currentFeat, next);
-                }
-            }
-        } else {
-            this.featuresHighCount.set(0);
-            this.featuresEmptyCount.set(0);
+        // Demand: as long as anything is in flight, use the full budget. Features dominate the
+        // per-chunk cost (structure plotting + decoration), so bias the split toward Features.
+        int wantTotal = Math.min(cap, Math.max(2, Math.min(cap, load + 1)));
+        int wantFeat = Math.max(1, (wantTotal * 2) / 3);
+        int wantBase = Math.max(1, wantTotal - wantFeat);
+        if (wantBase + wantFeat > cap) {
+            wantFeat = Math.max(1, cap - wantBase);
         }
+
+        if (wantBase != currentBase || wantFeat != currentFeat) {
+            resizePool(this.baseGenPool, wantBase);
+            resizePool(this.featuresPool, wantFeat);
+            WorldFlow.LOGGER.info("[WorldFlow Autoscaler] load={} (q={}+{}, inFlight={}) -> base={} feat={}",
+                    load, baseQueue, featQueue, inFlight, wantBase, wantFeat);
+        }
+    }
+
+    /** Give the autoscaler the pipeline's in-flight count (set once by the scheduler). */
+    public void setInFlightSupplier(IntSupplier supplier) {
+        if (supplier != null) {
+            this.inFlightSupplier = supplier;
+        }
+    }
+
+    public void enableAutoscale() {
+        this.manualSplitBase = -1;
+        this.manualSplitFeatures = -1;
+        this.autoscaleEnabled = true;
+        this.idleTicks = 0;
+    }
+
+    public void disableAutoscale() {
+        this.autoscaleEnabled = false;
+    }
+
+    public boolean isAutoscaleEnabled() {
+        return this.autoscaleEnabled;
     }
 
     public synchronized void setWorkerThreads(int count) {
@@ -256,13 +270,22 @@ public class GenerationWorkerPool {
         }
         int target = Math.max(1, count);
         int half = Math.max(1, target / 2);
-        resizePool(this.baseGenPool, half);
-        resizePool(this.featuresPool, target - half > 0 ? target - half : 1);
-        if (ModConfig.CONCURRENCY != null) {
-            ModConfig.CONCURRENCY.parallelWorkerThreads = target;
-        }
-        WorldFlow.LOGGER.info("[WorldFlow] Resized generation worker pools to {} BaseGen and {} Features threads.",
-                this.baseGenPool.getCorePoolSize(), this.featuresPool.getCorePoolSize());
+        int base = half;
+        int feat = Math.max(1, target - half);
+        // Pin the split: benchmarks and manual resizes must be deterministic, so the
+        // autoscaler stands down until enableAutoscale() is called again.
+        this.autoscaleEnabled = false;
+        this.manualSplitBase = base;
+        this.manualSplitFeatures = feat;
+        resizePool(this.baseGenPool, base);
+        resizePool(this.featuresPool, feat);
+        WorldFlow.LOGGER.info("[WorldFlow] Resized generation worker pools to {} BaseGen and {} Features threads (manual, autoscale paused).",
+                base, feat);
+    }
+
+    /** Total workers the autoscaler is allowed to use. */
+    public int getWorkerCap() {
+        return getMaxTotalWorkers();
     }
 
     private void resizePool(ThreadPoolExecutor pool, int target) {

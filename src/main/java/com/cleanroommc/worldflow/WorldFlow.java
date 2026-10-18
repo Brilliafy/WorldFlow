@@ -36,6 +36,7 @@ public class WorldFlow {
     @Mod.EventHandler
     public void init(FMLInitializationEvent event) {
         MinecraftForge.EVENT_BUS.register(new PregeneratorEngine());
+        MinecraftForge.EVENT_BUS.register(new com.cleanroommc.worldflow.pipeline.TileEntityHygieneHandler());
         MinecraftForge.EVENT_BUS.register(ChunkEventHandler.class);
         if (com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY != null && com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY.enableParallelGeneration) {
             com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().init();
