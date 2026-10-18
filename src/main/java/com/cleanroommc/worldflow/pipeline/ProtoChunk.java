@@ -75,6 +75,41 @@ public class ProtoChunk {
     }
 
     private final ReentrantLock chunkLock = new ReentrantLock();
+    private volatile boolean biomesFilled = false;
+
+    public boolean isBiomesFilled() {
+        return this.biomesFilled;
+    }
+
+    public void setBiomesFilled(boolean filled) {
+        this.biomesFilled = filled;
+    }
+
+    public void ensureBiomesFilled(com.pg85.otg.forge.world.ForgeWorld world) {
+        if (!this.biomesFilled && world != null) {
+            boolean acquired = false;
+            try {
+                acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (acquired) {
+                try {
+                    if (!this.biomesFilled && this.underlyingChunk != null) {
+                        com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext.fillBiomeArray(world, this.underlyingChunk);
+                        this.biomesFilled = true;
+                    }
+                } finally {
+                    this.chunkLock.unlock();
+                }
+            } else {
+                if (!this.biomesFilled && this.underlyingChunk != null) {
+                    com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext.fillBiomeArray(world, this.underlyingChunk);
+                    this.biomesFilled = true;
+                }
+            }
+        }
+    }
 
     public Chunk getChunk() {
         return this.underlyingChunk;
@@ -157,15 +192,22 @@ public class ProtoChunk {
             try {
                 Chunk chunk = this.underlyingChunk;
                 if (chunk != null) {
-                    return chunk.getBiome(pos, provider);
+                    Biome b = chunk.getBiome(pos, provider);
+                    if (b != null) return b;
                 }
-                return provider.getBiome(pos);
+                Biome b = provider != null ? provider.getBiome(pos) : null;
+                return b != null ? b : net.minecraft.init.Biomes.PLAINS;
             } finally {
                 this.chunkLock.unlock();
             }
         } else {
             Chunk chunk = this.underlyingChunk;
-            return chunk != null ? chunk.getBiome(pos, provider) : provider.getBiome(pos);
+            if (chunk != null) {
+                Biome b = chunk.getBiome(pos, provider);
+                if (b != null) return b;
+            }
+            Biome b = provider != null ? provider.getBiome(pos) : null;
+            return b != null ? b : net.minecraft.init.Biomes.PLAINS;
         }
     }
 

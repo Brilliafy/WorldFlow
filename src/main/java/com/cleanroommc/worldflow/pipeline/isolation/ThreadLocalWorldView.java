@@ -1,8 +1,10 @@
 package com.cleanroommc.worldflow.pipeline.isolation;
 
 import com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer;
+import com.cleanroommc.worldflow.pipeline.GenerationScheduler;
 import com.cleanroommc.worldflow.pipeline.ProtoChunk;
 import net.minecraft.block.state.IBlockState;
+import net.minecraft.init.Biomes;
 import net.minecraft.init.Blocks;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.util.math.BlockPos;
@@ -10,6 +12,7 @@ import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 import net.minecraft.world.biome.Biome;
+import net.minecraft.world.biome.BiomeProvider;
 import net.minecraft.world.chunk.Chunk;
 
 import javax.annotation.Nullable;
@@ -99,6 +102,11 @@ public class ThreadLocalWorldView {
             return proto.getBlockState(pos);
         }
 
+        ProtoChunk anyProto = GenerationScheduler.getInstance().getProtoChunkAny(key);
+        if (anyProto != null) {
+            return anyProto.getBlockState(pos);
+        }
+
         // Check if loaded in live world
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
         if (loaded != null) {
@@ -158,6 +166,11 @@ public class ThreadLocalWorldView {
             return proto.getChunk();
         }
 
+        ProtoChunk anyProto = GenerationScheduler.getInstance().getProtoChunkAny(key);
+        if (anyProto != null && anyProto.getChunk() != null) {
+            return anyProto.getChunk();
+        }
+
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
         if (loaded != null) {
             return loaded;
@@ -178,17 +191,35 @@ public class ThreadLocalWorldView {
         int chunkZ = pos.getZ() >> 4;
         long key = ChunkPos.asLong(chunkX, chunkZ);
 
+        BiomeProvider provider = WorkerGeneratorContext.get().getBiomeProvider(world);
+
         ProtoChunk proto = ctx.neighbourhood.get(key);
         if (proto != null) {
-            return proto.getBiome(pos, world.getBiomeProvider());
+            Biome b = proto.getBiome(pos, provider);
+            if (b != null) return b;
+        }
+
+        ProtoChunk anyProto = GenerationScheduler.getInstance().getProtoChunkAny(key);
+        if (anyProto != null) {
+            Biome b = anyProto.getBiome(pos, provider);
+            if (b != null) return b;
         }
 
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
         if (loaded != null) {
-            return loaded.getBiome(pos, world.getBiomeProvider());
+            Biome b = loaded.getBiome(pos, provider);
+            if (b != null) return b;
         }
 
-        return world.getBiomeProvider().getBiome(pos);
+        if (provider != null) {
+            try {
+                Biome b = provider.getBiome(pos);
+                if (b != null) return b;
+            } catch (Throwable ignored) {
+            }
+        }
+
+        return Biomes.PLAINS;
     }
 
     @Nullable

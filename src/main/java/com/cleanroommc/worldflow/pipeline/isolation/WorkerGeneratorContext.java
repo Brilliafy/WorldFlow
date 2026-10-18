@@ -114,6 +114,30 @@ public class WorkerGeneratorContext {
         return gen;
     }
 
+    public ForgeWorld getForgeWorld(World world, IChunkGenerator generator) {
+        if (world == null) {
+            return null;
+        }
+        try {
+            if (com.pg85.otg.OTG.getEngine() instanceof com.pg85.otg.forge.ForgeEngine) {
+                ForgeWorld fw = ((com.pg85.otg.forge.ForgeEngine) com.pg85.otg.OTG.getEngine()).getWorld(world);
+                if (fw != null) {
+                    return fw;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        if (generator != null && "com.pg85.otg.forge.generator.OTGChunkGenerator".equals(generator.getClass().getName())) {
+            try {
+                Field fWorld = generator.getClass().getDeclaredField("world");
+                fWorld.setAccessible(true);
+                return (ForgeWorld) fWorld.get(generator);
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
+    }
+
     public static void fireInitNoiseGensEvent(World world, IChunkGenerator gen) {
         try {
             if (world == null) {

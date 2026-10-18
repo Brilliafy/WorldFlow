@@ -263,6 +263,12 @@ public class GenerationScheduler {
             if (generatedChunk != null) {
                 proto.setUnderlyingChunk(generatedChunk);
             }
+            if (generator.getClass().getName().startsWith("com.pg85.otg.")) {
+                com.pg85.otg.forge.world.ForgeWorld forgeWorld = WorkerGeneratorContext.get().getForgeWorld(world, generator);
+                if (forgeWorld != null) {
+                    proto.ensureBiomesFilled(forgeWorld);
+                }
+            }
             holder.setCurrentStatus(ChunkStatus.CARVERS);
             holder.getCarversFuture().complete(proto.getChunk());
         } catch (Throwable t) {
@@ -398,6 +404,32 @@ public class GenerationScheduler {
             ChunkProviderServer provider = world.getChunkProvider();
             IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
             Random workerRand = WorkerGeneratorContext.get().rand;
+
+            // Ensure fillBiomeArray has run for all proto-chunks in neighbourhood and structure search radius
+            if (generator.getClass().getName().startsWith("com.pg85.otg.")) {
+                com.pg85.otg.forge.world.ForgeWorld forgeWorld = WorkerGeneratorContext.get().getForgeWorld(world, generator);
+                if (forgeWorld != null) {
+                    for (ProtoChunk p : neighbourhood.values()) {
+                        if (p != null) {
+                            p.ensureBiomesFilled(forgeWorld);
+                        }
+                    }
+                    int cx = pos.x;
+                    int cz = pos.z;
+                    for (int r = 2; r <= 8; r++) {
+                        for (int dx = -r; dx <= r; dx++) {
+                            for (int dz = -r; dz <= r; dz++) {
+                                if (Math.abs(dx) == r || Math.abs(dz) == r) {
+                                    ProtoChunk p = getProtoChunkAny(ChunkPos.asLong(cx + dx, cz + dz));
+                                    if (p != null) {
+                                        p.ensureBiomesFilled(forgeWorld);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // 1. PopulateChunkEvent.Pre
             try {
@@ -761,6 +793,15 @@ public class GenerationScheduler {
     @Nullable
     public StatusHolder getInFlight(long key) {
         return this.inFlight.get(key);
+    }
+
+    @Nullable
+    public ProtoChunk getProtoChunkAny(long key) {
+        StatusHolder holder = this.inFlight.get(key);
+        if (holder != null) {
+            return holder.getProtoChunk();
+        }
+        return this.carverCache.get(key);
     }
 
     public void removeInFlight(long key) {

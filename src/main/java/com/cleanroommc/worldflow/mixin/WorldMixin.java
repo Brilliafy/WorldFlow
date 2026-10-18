@@ -98,6 +98,8 @@ public abstract class WorldMixin {
             Biome biome = ThreadLocalWorldView.getBiome((World) (Object) this, pos);
             if (biome != null) {
                 cir.setReturnValue(biome);
+            } else {
+                cir.setReturnValue(net.minecraft.init.Biomes.PLAINS);
             }
         }
     }
