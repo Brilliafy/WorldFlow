@@ -217,13 +217,7 @@ public class GenerationScheduler {
             }
         }
 
-        // 3. Synchronous / Immediate priority caller: bypass staged pipeline and take vanilla inline path!
-        if (priority == GenerationPriority.IMMEDIATE) {
-            Chunk chunk = world.getChunkProvider().provideChunk(x, z);
-            return CompletableFuture.completedFuture(chunk);
-        }
-
-        // 4. Already tracked in pipeline?
+        // 3. Already tracked in pipeline?
         StatusHolder existing = this.inFlight.get(key);
         if (existing != null) {
             existing.bumpPriority(priority);
@@ -241,6 +235,12 @@ public class GenerationScheduler {
         if (pending != null) {
             pending.bumpPriority(priority);
             pending.setTargetStatus(targetStatus);
+            if (priority == GenerationPriority.IMMEDIATE) {
+                this.pendingRequests.remove(key);
+                this.inFlight.put(key, pending);
+                registerPendingWriters(pending);
+                advanceChunk(pending);
+            }
             return pending.getFuture();
         }
 
@@ -268,7 +268,7 @@ public class GenerationScheduler {
         boolean isServerThread = world.getMinecraftServer() != null && world.getMinecraftServer().isCallingFromMinecraftThread();
         boolean isWorkerThread = Thread.currentThread().getName().startsWith("WorldFlow-");
 
-        if (this.inFlight.size() >= maxInFlight && !isWorkerThread) {
+        if (this.inFlight.size() >= maxInFlight && !isWorkerThread && priority != GenerationPriority.IMMEDIATE) {
             if (!isServerThread) {
                 // Background callers (e.g. bench or async threads): throttle smoothly
                 while (this.inFlight.size() >= maxInFlight) {
@@ -623,7 +623,7 @@ public class GenerationScheduler {
     private void fallbackToMainThreadSerial(StatusHolder holder) {
         WorldServer world = holder.getWorld();
         ChunkPos pos = holder.getPos();
-        world.addScheduledTask(() -> {
+        Runnable action = () -> {
             try {
                 Chunk loaded = world.getChunkProvider().getLoadedChunk(pos.x, pos.z);
                 if (loaded != null) {
@@ -636,9 +636,28 @@ public class GenerationScheduler {
                     notifyNeighboursOfCompletion(pos.x, pos.z);
                     return;
                 }
-                Chunk chunk = world.getChunkProvider().provideChunk(pos.x, pos.z);
-                holder.getProtoChunk().setUnderlyingChunk(chunk);
+                if (world.getChunkProvider().chunkLoader != null && world.getChunkProvider().chunkLoader.isChunkGeneratedAt(pos.x, pos.z)) {
+                    Chunk diskChunk = world.getChunkProvider().loadChunk(pos.x, pos.z);
+                    if (diskChunk != null) {
+                        holder.getProtoChunk().setUnderlyingChunk(diskChunk);
+                        holder.setCurrentStatus(ChunkStatus.FULL);
+                        holder.setOwnDecorationDone(true);
+                        holder.getCarversFuture().complete(diskChunk);
+                        holder.getWorkerDoneFuture().complete(diskChunk);
+                        holder.getFuture().complete(diskChunk);
+                        PublishManager.INSTANCE.publishChunk(world, holder);
+                        removeInFlight(holder.getChunkKey());
+                        notifyNeighboursOfCompletion(pos.x, pos.z);
+                        return;
+                    }
+                }
+                Chunk chunk = holder.getProtoChunk().getChunk();
+                if (chunk == null) {
+                    chunk = new Chunk(world, pos.x, pos.z);
+                    holder.getProtoChunk().setUnderlyingChunk(chunk);
+                }
                 holder.getProtoChunk().setTerrainPopulated(true);
+                holder.setCurrentStatus(ChunkStatus.FULL);
                 holder.setOwnDecorationDone(true);
                 holder.getCarversFuture().complete(chunk);
                 holder.getWorkerDoneFuture().complete(chunk);
@@ -657,7 +676,13 @@ public class GenerationScheduler {
                 removeInFlight(holder.getChunkKey());
                 notifyNeighboursOfCompletion(pos.x, pos.z);
             }
-        });
+        };
+
+        if (world.isCallingFromMinecraftThread()) {
+            action.run();
+        } else {
+            world.addScheduledTask(action);
+        }
     }
 
     private static volatile List<IWorldGenerator> cachedSortedGenerators;
@@ -907,6 +932,11 @@ public class GenerationScheduler {
     @Nullable
     public StatusHolder getInFlight(long key) {
         return this.inFlight.get(key);
+    }
+
+    @Nullable
+    public StatusHolder getPendingRequest(long key) {
+        return this.pendingRequests.get(key);
     }
 
     @Nullable

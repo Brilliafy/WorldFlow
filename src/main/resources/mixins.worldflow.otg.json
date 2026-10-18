@@ -9,7 +9,9 @@
     "OTGChunkGeneratorMixin",
     "ForgeEngineMixin",
     "ForgeWorldMixin",
-    "OreGenMixin"
+    "OreGenMixin",
+    "CustomStructureCacheMixin",
+    "CustomStructurePlotterMixin"
   ],
   "server": [],
   "client": []

@@ -68,9 +68,26 @@ public abstract class ChunkProviderServerMixin {
             }
         }
 
-        // 3. Check if chunk is completed or in-flight in the parallel pipeline
+        // 3. Coordinate with the parallel pipeline:
         long key = ChunkPos.asLong(x, z);
         StatusHolder holder = GenerationScheduler.getInstance().getInFlight(key);
+        if (holder == null) {
+            holder = GenerationScheduler.getInstance().getPendingRequest(key);
+        }
+
+        // If chunk is not yet requested, request it through the pipeline
+        if (holder == null) {
+            GenerationScheduler.getInstance().requestChunk(
+                    this.world, x, z,
+                    com.cleanroommc.worldflow.pipeline.ChunkStatus.FULL,
+                    com.cleanroommc.worldflow.pipeline.GenerationPriority.IMMEDIATE
+            );
+            holder = GenerationScheduler.getInstance().getInFlight(key);
+            if (holder == null) {
+                holder = GenerationScheduler.getInstance().getPendingRequest(key);
+            }
+        }
+
         if (holder != null) {
             if (holder.isDone()) {
                 cir.setReturnValue(holder.getProtoChunk().getChunk());
@@ -81,24 +98,39 @@ public abstract class ChunkProviderServerMixin {
                 cir.setReturnValue(holder.getProtoChunk().getChunk());
                 return;
             }
-            // In flight: bump priority to IMMEDIATE and wait up to 50ms for worker completion
+
+            // In flight: bump priority to IMMEDIATE and park main thread on future (no 50ms timeout!)
             holder.bumpPriority(com.cleanroommc.worldflow.pipeline.GenerationPriority.IMMEDIATE);
+            com.cleanroommc.worldflow.pipeline.ServerStallWatchdog.recordMainThreadWaitStart(x, z);
             try {
-                holder.getWorkerDoneFuture().get(50, java.util.concurrent.TimeUnit.MILLISECONDS);
-                if (holder.getCurrentStatus().isAtLeast(com.cleanroommc.worldflow.pipeline.ChunkStatus.LIGHT)) {
-                    PublishManager.INSTANCE.publishChunk(this.world, holder);
-                    cir.setReturnValue(holder.getProtoChunk().getChunk());
-                    return;
-                }
-            } catch (Throwable ignored) {
+                // Main thread parks on pipeline future (up to 60s)
+                holder.getWorkerDoneFuture().get(60, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (Throwable t) {
+                com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] Main thread wait on chunk [{}, {}] finished with: {}", x, z, t.toString());
+            } finally {
+                com.cleanroommc.worldflow.pipeline.ServerStallWatchdog.recordMainThreadWaitEnd();
             }
-            // Timed out waiting for worker: allow vanilla provideChunk to proceed inline
+
+            if (holder.getCurrentStatus().isAtLeast(com.cleanroommc.worldflow.pipeline.ChunkStatus.LIGHT)) {
+                PublishManager.INSTANCE.publishChunk(this.world, holder);
+                cir.setReturnValue(holder.getProtoChunk().getChunk());
+                return;
+            }
+
+            // Serve partially ready chunk — never fall back to full inline populate!
+            Chunk readyChunk = holder.getProtoChunk().getChunk();
+            if (readyChunk == null) {
+                readyChunk = new Chunk(this.world, x, z);
+                holder.getProtoChunk().setUnderlyingChunk(readyChunk);
+            }
+            PublishManager.INSTANCE.publishChunk(this.world, holder);
+            cir.setReturnValue(readyChunk);
+            return;
         }
 
-        // 4. Synchronous callers (Chunk-Pregenerator, commands, /otg, etc.) bypass
-        // the staged pipeline and take the vanilla inline path!
-        // Returning here without calling cir.setReturnValue allows ChunkProviderServer.provideChunk
-        // to execute its vanilla inline generation & population.
+        // Failsafe: Never fall back to full inline populate on main thread while pipeline is enabled
+        Chunk fallbackChunk = new Chunk(this.world, x, z);
+        cir.setReturnValue(fallbackChunk);
     }
 
     @Inject(method = "provideChunk(II)Lnet/minecraft/world/chunk/Chunk;", at = @At("RETURN"))
