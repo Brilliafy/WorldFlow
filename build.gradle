@@ -353,3 +353,47 @@ idea.project.settings {
 
 apply from: 'gradle/scripts/publishing.gradle'
 apply from: 'gradle/scripts/extra.gradle'
+
+tasks.register('verifyNoSyntheticMixinConstructors') {
+    dependsOn 'reobfJar'
+    doLast {
+        def jarFiles = fileTree('build/libs').matching {
+            include '*.jar'
+            exclude '*-sources.jar', '*-javadoc.jar'
+        }.files
+
+        def pattern = java.util.regex.Pattern.compile(/.*Mixin\$[0-9]+.*/)
+        def descriptorPattern = java.util.regex.Pattern.compile(/\(([^)]*)\)V/)
+        def violations = []
+
+        jarFiles.each { jarFile ->
+            logger.lifecycle("[WorldFlow Build Gate] Scanning ${jarFile.name} for synthetic Mixin constructor parameters...")
+            new java.util.zip.ZipFile(jarFile).withCloseable { zip ->
+                zip.entries().each { entry ->
+                    if (entry.name.endsWith('.class')) {
+                        def bytes = zip.getInputStream(entry).bytes
+                        def str = new String(bytes, java.nio.charset.StandardCharsets.ISO_8859_1)
+                        def matcher = descriptorPattern.matcher(str)
+                        while (matcher.find()) {
+                            def params = matcher.group(1)
+                            if (pattern.matcher(params).matches()) {
+                                violations << "[${jarFile.name}] ${entry.name} -> constructor descriptor: (${params})V"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!violations.isEmpty()) {
+            throw new GradleException("[WorldFlow Build Gate] FAILED! Found synthetic Mixin constructor parameters in JAR:\n" + violations.join("\n") +
+                    "\nRule: Mixins and their inner classes must not generate synthetic constructor parameters (e.g. *Mixin\$[0-9]+). Move inner classes to standalone top-level classes!")
+        }
+        logger.lifecycle("[WorldFlow Build Gate] PASSED: 0 synthetic Mixin constructor parameters found.")
+    }
+}
+
+tasks.named('build').configure {
+    dependsOn 'verifyNoSyntheticMixinConstructors'
+}
+

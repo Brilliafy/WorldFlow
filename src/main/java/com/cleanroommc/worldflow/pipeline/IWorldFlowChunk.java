@@ -11,4 +11,8 @@ public interface IWorldFlowChunk {
     GenPath worldflow$getGenPath();
 
     void worldflow$setGenPath(GenPath path);
+
+    boolean worldflow$isPublished();
+
+    void worldflow$setPublished(boolean published);
 }

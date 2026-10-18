@@ -53,10 +53,6 @@ public abstract class ForgeWorldMixin {
     @Shadow
     public abstract ForgeBiome getBiomeByOTGIdOrNull(int id);
 
-    public static class PopulationBiomeCache {
-        public PopulationBiomeCache() {
-        }
-    }
 
     private LocalBiome worldflow$getFallbackBiome(ForgeWorld self) {
         if (self == null) return null;

@@ -346,6 +346,15 @@ public class CommandWorldFlow extends CommandBase {
         }
         int cx = sender.getPosition().getX() >> 4;
         int cz = sender.getPosition().getZ() >> 4;
+        if (args.length >= 4) {
+            try {
+                cx = Integer.parseInt(args[2]);
+                cz = Integer.parseInt(args[3]);
+            } catch (NumberFormatException e) {
+                sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid center chunk coordinates: " + args[2] + ", " + args[3]));
+                return;
+            }
+        }
         com.cleanroommc.worldflow.debug.ChunkDumper.executeDiffArea(server, world, cx, cz, radius, sampleStep, sender);
     }
 
@@ -382,6 +391,15 @@ public class CommandWorldFlow extends CommandBase {
         }
         int cx = sender.getPosition().getX() >> 4;
         int cz = sender.getPosition().getZ() >> 4;
+        if (args.length >= 4) {
+            try {
+                cx = Integer.parseInt(args[2]);
+                cz = Integer.parseInt(args[3]);
+            } catch (NumberFormatException e) {
+                sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid center chunk coordinates: " + args[2] + ", " + args[3]));
+                return;
+            }
+        }
         com.cleanroommc.worldflow.debug.BenchmarkRunner.executeBenchmark(server, world, cx, cz, radius, workers, sender);
     }
 

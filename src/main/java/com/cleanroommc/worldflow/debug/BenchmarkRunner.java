@@ -131,10 +131,11 @@ public class BenchmarkRunner {
                 double avgBaseMs = deltaBaseGenCount > 0 ? (deltaBaseGenNanos / 1_000_000.0) / deltaBaseGenCount : 0.0;
                 double avgFeatMs = deltaFeatCount > 0 ? (deltaFeatNanos / 1_000_000.0) / deltaFeatCount : 0.0;
 
+                long seed = world.getSeed();
                 send(server, sender, TextFormatting.GOLD + "=== WorldFlow Pipeline Benchmark Results ===");
                 send(server, sender, TextFormatting.GREEN + String.format(
-                        "Area: radius %d (%d chunks) | Workers: %d",
-                        radius, totalChunks, effectiveWorkers
+                        "Area: radius %d (%d chunks) | Workers: %d | Center: [%d, %d] | Seed: %d",
+                        radius, totalChunks, effectiveWorkers, centerX, centerZ, seed
                 ));
                 send(server, sender, TextFormatting.YELLOW + String.format(
                         "Time Elapsed: %.2f s (%.1f chunks/s | %.0f chunks/min)",
@@ -154,8 +155,8 @@ public class BenchmarkRunner {
                 ));
 
                 send(server, sender, TextFormatting.GREEN + String.format(
-                        "[WorldFlow Bench] Benchmark complete! Run '/worldflow diffarea %d 4' to verify chunk bit-equivalence.",
-                        radius
+                        "[WorldFlow Bench] Benchmark complete! Run '/worldflow diffarea %d 4 %d %d' to verify chunk bit-equivalence.",
+                        radius, centerX, centerZ
                 ));
 
             } catch (Throwable t) {

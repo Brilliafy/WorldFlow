@@ -43,6 +43,15 @@ public abstract class ChunkProviderServerMixin {
             return;
         }
 
+        // 0. Off-thread worker guard: Never trigger synchronous vanilla chunk generation/population on worker threads!
+        if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            Chunk chunk = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunk(this.world, x, z);
+            if (chunk != null) {
+                cir.setReturnValue(chunk);
+                return;
+            }
+        }
+
         // 1. Check if chunk is already loaded in RAM
         Chunk loaded = this.getLoadedChunk(x, z);
         if (loaded != null) {

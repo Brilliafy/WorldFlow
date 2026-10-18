@@ -40,6 +40,7 @@ public class ThreadLocalWorldView {
         public final Map<Long, ProtoChunk> neighbourhood = new ConcurrentHashMap<>();
         public final Chunk emptyChunk;
         public final String generatorName;
+        private final Map<Long, Chunk> emptyChunks = new ConcurrentHashMap<>();
 
         public GenerationWorkerContext(WorldServer world, ChunkPos centerPos, ProtoChunk centerProto, String generatorName) {
             this.world = world;
@@ -50,6 +51,11 @@ public class ThreadLocalWorldView {
             if (centerProto != null) {
                 this.neighbourhood.put(ChunkPos.asLong(centerPos.x, centerPos.z), centerProto);
             }
+        }
+
+        public Chunk getOrCreateEmptyChunk(int cx, int cz) {
+            long key = ChunkPos.asLong(cx, cz);
+            return this.emptyChunks.computeIfAbsent(key, k -> new Chunk(this.world, cx, cz));
         }
 
         public void addNeighbour(ProtoChunk protoChunk) {
@@ -139,6 +145,12 @@ public class ThreadLocalWorldView {
         // Check if loaded in live world
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
         if (loaded != null) {
+            if (loaded instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk
+                    && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) loaded).worldflow$isPublished()) {
+                com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] Worker {} blocked from mutating already-published chunk [{}, {}] at {}",
+                        ctx.generatorName, chunkX, chunkZ, pos);
+                return false;
+            }
             return loaded.setBlockState(pos, state) != null;
         }
 
@@ -177,7 +189,7 @@ public class ThreadLocalWorldView {
         }
 
         // Return empty chunk so queries don't NPE, but NEVER trigger synchronous disk load or generateChunk
-        return ctx.emptyChunk;
+        return ctx.getOrCreateEmptyChunk(chunkX, chunkZ);
     }
 
     @Nullable

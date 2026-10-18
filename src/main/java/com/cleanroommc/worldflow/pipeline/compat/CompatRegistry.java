@@ -114,11 +114,8 @@ public class CompatRegistry {
             }
         }
 
-        // Default: serialize unknown modded IWorldGenerators for maximum stability
-        if (isWorldGen) {
-            return GeneratorSafetyLevel.SERIALIZE;
-        }
-
+        // Default: PARALLEL_SAFE. ThreadLocalWorldView and CascadeBlockBuffer isolate block placements and chunk access.
+        // Known unsafe multi-chunk structure generators are explicitly configured as SERIALIZE or UNSAFE.
         return GeneratorSafetyLevel.PARALLEL_SAFE;
     }
 }

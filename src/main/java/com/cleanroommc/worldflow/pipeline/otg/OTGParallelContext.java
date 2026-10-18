@@ -144,7 +144,7 @@ public class OTGParallelContext {
             for (int i = 0; i < chunkBiomeArray.length && i < biomeShortArray.length; ++i) {
                 int generationId = biomeShortArray[i];
                 com.pg85.otg.common.LocalBiome biome = configProvider.getBiomeByOTGIdOrNull(generationId);
-                chunkBiomeArray[i] = (byte) (biome != null ? biome.getIds().getSavedId() : 0);
+                chunkBiomeArray[i] = (byte) (biome != null && biome.getIds() != null ? biome.getIds().getSavedId() : 0);
             }
         }
     }

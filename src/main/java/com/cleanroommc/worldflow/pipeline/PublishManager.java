@@ -139,6 +139,7 @@ public class PublishManager {
         // 7. Complete status and future
         if (chunk instanceof IWorldFlowChunk) {
             ((IWorldFlowChunk) chunk).worldflow$setGenPath(IWorldFlowChunk.GenPath.PIPELINE);
+            ((IWorldFlowChunk) chunk).worldflow$setPublished(true);
         }
         GenerationScheduler.getInstance().totalChunksPipeline.incrementAndGet();
         holder.setCurrentStatus(ChunkStatus.FULL);

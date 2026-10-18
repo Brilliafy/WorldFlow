@@ -46,6 +46,7 @@ public class GenerationScheduler {
     private final Map<Long, StatusHolder> pendingRequests = new ConcurrentHashMap<>();
     private final Map<Long, ProtoChunk> carverCache = new ConcurrentHashMap<>();
     private final Map<IWorldGenerator, ReentrantLock> generatorLocks = new ConcurrentHashMap<>();
+    private static final ThreadLocal<Boolean> IS_DECORATING = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     public final AtomicLong totalGenerationsRequested = new AtomicLong(0);
     private final long pipelineStartTimeMs = System.currentTimeMillis();
@@ -393,16 +394,32 @@ public class GenerationScheduler {
     }
 
     private void executeFeatures(StatusHolder holder, Map<Long, ProtoChunk> neighbourhood) {
+        if (IS_DECORATING.get()) {
+            WorldFlow.LOGGER.warn("[WorldFlow] Detected recursive feature execution on thread {} for chunk [{}, {}], aborting re-entry",
+                    Thread.currentThread().getName(), holder.getPos().x, holder.getPos().z);
+            return;
+        }
+        IS_DECORATING.set(true);
+
         WorldServer world = holder.getWorld();
         ChunkPos pos = holder.getPos();
         ProtoChunk proto = holder.getProtoChunk();
 
+        com.cleanroommc.worldflow.pipeline.isolation.PopulationHighestBlocksCache.reset();
         long startNanos = System.nanoTime();
         ThreadLocalWorldView.enter(world, pos, proto, "Features");
         ThreadLocalWorldView.attachNeighbourhood(neighbourhood);
         try {
             ChunkProviderServer provider = world.getChunkProvider();
             IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
+            if (generator == null && provider != null) {
+                generator = provider.chunkGenerator;
+            }
+            if (generator == null) {
+                WorldFlow.LOGGER.warn("[WorldFlow] ChunkGenerator is null for chunk [{}, {}], falling back to main-thread serial", pos.x, pos.z);
+                fallbackToMainThreadSerial(holder);
+                return;
+            }
             Random workerRand = WorkerGeneratorContext.get().rand;
 
             // Ensure fillBiomeArray has run for all proto-chunks in neighbourhood and structure search radius
@@ -480,6 +497,7 @@ public class GenerationScheduler {
             this.totalFeaturesNanos.addAndGet(System.nanoTime() - startNanos);
             this.totalFeaturesCount.incrementAndGet();
             checkLogMetrics();
+            IS_DECORATING.set(false);
         }
 
         // Ready for publish to main thread
@@ -549,6 +567,9 @@ public class GenerationScheduler {
         long chunkSeed = (xSeed * chunkX + zSeed * chunkZ) ^ worldSeed;
 
         for (IWorldGenerator generator : cachedSortedGenerators) {
+            if (generator == null) {
+                continue;
+            }
             fmlRandom.setSeed(chunkSeed);
             GeneratorSafetyLevel safety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
             if (safety == GeneratorSafetyLevel.SERIALIZE) {

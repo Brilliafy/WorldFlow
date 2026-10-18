@@ -37,6 +37,8 @@ public abstract class ChunkMixin implements IWorldFlowChunk {
     }
 
     private IWorldFlowChunk.GenPath worldflow$genPath = IWorldFlowChunk.GenPath.UNKNOWN;
+    @org.spongepowered.asm.mixin.Unique
+    private volatile boolean worldflow$published = false;
 
     @Override
     public IWorldFlowChunk.GenPath worldflow$getGenPath() {
@@ -46,6 +48,24 @@ public abstract class ChunkMixin implements IWorldFlowChunk {
     @Override
     public void worldflow$setGenPath(IWorldFlowChunk.GenPath path) {
         this.worldflow$genPath = path;
+    }
+
+    @Override
+    public boolean worldflow$isPublished() {
+        return this.worldflow$published;
+    }
+
+    @Override
+    public void worldflow$setPublished(boolean published) {
+        this.worldflow$published = published;
+    }
+
+    @Inject(method = "setBlockState", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onSetBlockState(net.minecraft.util.math.BlockPos pos, net.minecraft.block.state.IBlockState state, CallbackInfoReturnable<net.minecraft.block.state.IBlockState> cir) {
+        if (this.worldflow$published && com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] Guard blocked mutation of published chunk [{}, {}] at {} by worker thread", this.x, this.z, pos);
+            cir.setReturnValue(null);
+        }
     }
 
     @Shadow
@@ -78,7 +98,7 @@ public abstract class ChunkMixin implements IWorldFlowChunk {
         }
         if (ModConfig.GENERAL.enableCascadeFix && ModConfig.GENERAL.stageForgeDecorators) {
             GenerationContext.exitPopulate();
-            if (this.world instanceof WorldServer) {
+            if (this.world instanceof WorldServer && !this.worldflow$published) {
                 CascadeBlockBuffer.INSTANCE.flushChunk((WorldServer) this.world, (Chunk) (Object) this);
             }
         }
