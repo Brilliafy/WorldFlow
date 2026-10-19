@@ -54,7 +54,7 @@ public class ChunkEventHandler {
         }
 
         WorldServer worldServer = (WorldServer) event.getWorld();
-        GenerationScheduler.getInstance().quiesceAndDrain(worldServer, 15000L);
+        GenerationScheduler.getInstance().quiesceAndDrain(worldServer, 60000L);
 
         if (ModConfig.GENERAL.persistStagedBlocks) {
             CascadeSavedData.get(event.getWorld()).markDirty();
@@ -68,6 +68,6 @@ public class ChunkEventHandler {
         }
 
         WorldServer worldServer = (WorldServer) event.getWorld();
-        GenerationScheduler.getInstance().quiesceAndDrain(worldServer, 15000L);
+        GenerationScheduler.getInstance().quiesceAndDrain(worldServer, 60000L);
     }
 }

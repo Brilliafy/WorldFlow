@@ -9,6 +9,7 @@
     "NoiseGeneratorImprovedMixin",
     "WorldMixin",
     "WorldServerMixin",
+    "WorldServerSaveMixin",
     "ChunkMixin",
     "PlayerChunkMapEntryMixin",
     "ChunkProviderServerMixin",

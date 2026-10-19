@@ -49,8 +49,8 @@ public class GenerationScheduler {
     private static final ThreadLocal<Boolean> IS_DECORATING = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final AtomicBoolean dirtyPublishSweep = new AtomicBoolean(false);
 
-    /** True while the server thread is draining the pipeline for a world save. */
-    private final AtomicBoolean quiescing = new AtomicBoolean(false);
+    /** Wall-clock deadline until which external producers must not submit new chunks. */
+    private final AtomicLong quiescingUntilMs = new AtomicLong(0L);
 
     public final AtomicLong totalGenerationsRequested = new AtomicLong(0);
     private final long pipelineStartTimeMs = System.currentTimeMillis();
@@ -329,9 +329,9 @@ public class GenerationScheduler {
         return requestChunk(world, x, z, ChunkStatus.FULL, priority);
     }
 
-    /** External producers wait out a save-time drain; workers and the server thread never do. */
+    /** External producers wait out a save; workers and the server thread never do. */
     private void awaitQuiesce(WorldServer world) {
-        if (!this.quiescing.get()) {
+        if (System.currentTimeMillis() >= this.quiescingUntilMs.get()) {
             return;
         }
         if (Thread.currentThread().getName().startsWith("WorldFlow-")) {
@@ -341,7 +341,7 @@ public class GenerationScheduler {
                 && world.getMinecraftServer().isCallingFromMinecraftThread()) {
             return;
         }
-        while (this.quiescing.get()) {
+        while (System.currentTimeMillis() < this.quiescingUntilMs.get()) {
             try {
                 Thread.sleep(5L);
             } catch (InterruptedException e) {
@@ -349,6 +349,15 @@ public class GenerationScheduler {
                 return;
             }
         }
+    }
+
+    public void beginQuiesce(long maxBlockMs) {
+        long until = System.currentTimeMillis() + Math.max(1000L, maxBlockMs);
+        this.quiescingUntilMs.accumulateAndGet(until, Math::max);
+    }
+
+    public void endQuiesce() {
+        this.quiescingUntilMs.set(0L);
     }
 
     public CompletableFuture<Chunk> requestChunk(WorldServer world, int x, int z, ChunkStatus targetStatus, GenerationPriority priority) {
@@ -1384,17 +1393,15 @@ public class GenerationScheduler {
 
     public void quiesceAndDrain(WorldServer world, long timeoutMs) {
         // Stop external producers (bench/pregen threads) from feeding new chunks while we
-        // drain. Otherwise workers keep decorating during the save, and mods that touch
-        // MapStorage (Recurrent Complex saved data) race the main thread's save.
-        boolean wasQuiescing = this.quiescing.getAndSet(true);
-        try {
-            drainPendingRequests();
-            long deadline = System.currentTimeMillis() + timeoutMs;
-            boolean isServerThread = world.getMinecraftServer() != null && world.getMinecraftServer().isCallingFromMinecraftThread();
-            quiesceAndDrain0(world, timeoutMs, deadline, isServerThread);
-        } finally {
-            this.quiescing.set(wasQuiescing);
-        }
+        // drain and while the save runs. Otherwise workers keep decorating during the save,
+        // and mods that touch MapStorage (Recurrent Complex saved data) race the main thread.
+        // The window is extended by WorldServerSaveMixin; the deadline auto-expires if the
+        // save never reports completion.
+        beginQuiesce(timeoutMs + 5000L);
+        drainPendingRequests();
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        boolean isServerThread = world.getMinecraftServer() != null && world.getMinecraftServer().isCallingFromMinecraftThread();
+        quiesceAndDrain0(world, timeoutMs, deadline, isServerThread);
     }
 
     private void quiesceAndDrain0(WorldServer world, long timeoutMs, long deadline, boolean isServerThread) {
