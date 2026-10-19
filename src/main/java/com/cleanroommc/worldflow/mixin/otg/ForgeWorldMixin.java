@@ -94,8 +94,23 @@ public abstract class ForgeWorldMixin {
         return null;
     }
 
+    private static final ThreadLocal<java.util.HashMap<Long, LocalBiome>> WORLD_FLOW_BIOME_CACHE =
+            ThreadLocal.withInitial(java.util.HashMap::new);
+    private static final int WORLD_FLOW_BIOME_CACHE_MAX = 16384;
+
     @Inject(method = "getCalculatedBiome", at = @At("HEAD"), cancellable = true, remap = false)
     private void worldflow$onGetCalculatedBiome(int x, int z, CallbackInfoReturnable<LocalBiome> cir) {
+        // Biome is a pure function of (x, z) for a given world: cache per worker so the global
+        // biomeGenerator lock is only taken on a miss. This lock was taken for every biome
+        // lookup and serialised all decoration workers.
+        long cacheKey = ((long) x << 32) ^ (z & 0xffffffffL);
+        java.util.HashMap<Long, LocalBiome> cache = WORLD_FLOW_BIOME_CACHE.get();
+        LocalBiome cached = cache.get(cacheKey);
+        if (cached != null) {
+            cir.setReturnValue(cached);
+            return;
+        }
+
         ForgeWorld self = (ForgeWorld) (Object) this;
         LocalBiome biome = null;
         if (this.biomeGenerator != null) {
@@ -112,6 +127,10 @@ public abstract class ForgeWorldMixin {
             biome = worldflow$getFallbackBiome(self);
         }
         if (biome != null) {
+            if (cache.size() >= WORLD_FLOW_BIOME_CACHE_MAX) {
+                cache.clear();
+            }
+            cache.put(cacheKey, biome);
             cir.setReturnValue(biome);
         }
     }

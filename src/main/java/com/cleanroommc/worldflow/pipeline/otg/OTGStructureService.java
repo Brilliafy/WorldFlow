@@ -45,7 +45,11 @@ public class OTGStructureService {
         });
 
         try {
-            future.get();
+            // Bounded wait: plotting is idempotent and re-entrant calls can otherwise park a
+            // worker forever on its own queued task (observed as In-Flight: 96 / Rate: 0).
+            future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException te) {
+            WorldFlow.LOGGER.warn("[WorldFlow] Structure plot for chunk {} timed out; continuing (plot is idempotent)", chunkCoord);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (ExecutionException e) {
@@ -68,7 +72,10 @@ public class OTGStructureService {
         });
 
         try {
-            return future.get();
+            return future.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (java.util.concurrent.TimeoutException te) {
+            WorldFlow.LOGGER.warn("[WorldFlow] Single structure plot for chunk {} timed out; continuing", chunkCoord);
+            return null;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return null;

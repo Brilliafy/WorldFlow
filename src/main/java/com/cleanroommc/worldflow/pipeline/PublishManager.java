@@ -28,6 +28,8 @@ public class PublishManager {
     private final Queue<StatusHolder> pendingPublishQueue = new ConcurrentLinkedQueue<>();
     private final Queue<TePurge> tePurgeQueue = new ConcurrentLinkedQueue<>();
     public final AtomicLong totalChunksPublished = new AtomicLong(0);
+    public final AtomicLong totalLightNanos = new AtomicLong(0);
+    public final AtomicLong totalLightCount = new AtomicLong(0);
 
     private static final class TePurge {
         final WorldServer world;
@@ -159,24 +161,35 @@ public class PublishManager {
 
             chunk.onLoad();
 
-            // 4. Tick-thread lighting for the new chunk. Neighbour relighting was dropped: it
-            //    cost ~5x the chunk's own light pass and pregen has no players to see seams.
-            try {
-                chunk.checkLight();
-            } catch (Throwable t) {
-                WorldFlow.LOGGER.debug("[WorldFlow] Light check exception on chunk [{}, {}]", cx, cz, t);
+            // 4. Tick-thread lighting for the new chunk (measurable, optional).
+            boolean skipLight = com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY != null
+                    && com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY.skipPublishLighting;
+            if (!skipLight) {
+                long lightStart = System.nanoTime();
+                try {
+                    chunk.checkLight();
+                } catch (Throwable t) {
+                    WorldFlow.LOGGER.debug("[WorldFlow] Light check exception on chunk [{}, {}]", cx, cz, t);
+                } finally {
+                    this.totalLightNanos.addAndGet(System.nanoTime() - lightStart);
+                    this.totalLightCount.incrementAndGet();
+                }
             }
 
-            // 5. Fire Forge events on the server tick thread
-            try {
-                MinecraftForge.EVENT_BUS.post(new net.minecraftforge.event.terraingen.PopulateChunkEvent.Post(world.getChunkProvider().chunkGenerator, world, world.rand, cx, cz, false));
-            } catch (Throwable t) {
-                WorldFlow.LOGGER.debug("[WorldFlow] Handled exception in PopulateChunkEvent.Post", t);
-            }
-            try {
-                MinecraftForge.EVENT_BUS.post(new ChunkEvent.Load(chunk));
-            } catch (Throwable t) {
-                WorldFlow.LOGGER.debug("[WorldFlow] Handled exception in ChunkEvent.Load", t);
+            // 5. Fire Forge events on the server tick thread (only ~10 mods listen; measurable)
+            boolean fireEvents = com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY == null
+                    || com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY.fireChunkEventsOnPublish;
+            if (fireEvents) {
+                try {
+                    MinecraftForge.EVENT_BUS.post(new net.minecraftforge.event.terraingen.PopulateChunkEvent.Post(world.getChunkProvider().chunkGenerator, world, world.rand, cx, cz, false));
+                } catch (Throwable t) {
+                    WorldFlow.LOGGER.debug("[WorldFlow] Handled exception in PopulateChunkEvent.Post", t);
+                }
+                try {
+                    MinecraftForge.EVENT_BUS.post(new ChunkEvent.Load(chunk));
+                } catch (Throwable t) {
+                    WorldFlow.LOGGER.debug("[WorldFlow] Handled exception in ChunkEvent.Load", t);
+                }
             }
 
             // 6. Update PlayerChunkMapEntry and send packet to waiting players
@@ -211,7 +224,8 @@ public class PublishManager {
             holder.getWorkerDoneFuture().complete(chunk);
             holder.getFuture().complete(chunk);
             this.totalChunksPublished.incrementAndGet();
-            GenerationScheduler.getInstance().invalidateCarverCache(key);
+            // Keep the carver cache entry: neighbour chunks still need this terrain for their
+            // decoration. Evicting it on publish forced neighbours to regenerate base terrain.
             GenerationScheduler.getInstance().checkLogMetrics();
 
             // 8. Cleanup from in-flight tracker and notify neighbours

@@ -8,6 +8,7 @@ import com.pg85.otg.generator.ChunkBuffer;
 import com.pg85.otg.generator.ChunkProviderOTG;
 import com.pg85.otg.util.ChunkCoordinate;
 import net.minecraft.world.World;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.chunk.Chunk;
 
 import java.lang.reflect.Constructor;
@@ -126,6 +127,15 @@ public class OTGParallelContext {
         }
     }
 
+    /**
+     * Saved-id biome array per chunk. OTG's layered biome generator is expensive (recursive
+     * LayerBiomeInBiome/LayerZoom math) and the same chunk is queried by every neighbour that
+     * decorates around it, so results are cached once per chunk and copied out.
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<Long, byte[]> BIOME_ARRAY_CACHE =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int BIOME_ARRAY_CACHE_MAX = 16384;
+
     public static void fillBiomeArray(ForgeWorld world, Chunk chunk) {
         if (world == null || chunk == null) {
             return;
@@ -136,17 +146,32 @@ public class OTGParallelContext {
         if (configProvider == null || biomeGenerator == null) {
             return;
         }
-        int[] biomeShortArray;
-        synchronized (biomeGenerator) {
-            biomeShortArray = biomeGenerator.getBiomes(null, chunk.x * 16, chunk.z * 16, 16, 16, com.pg85.otg.generator.biome.OutputType.DEFAULT_FOR_WORLD);
-        }
-        if (biomeShortArray != null) {
-            for (int i = 0; i < chunkBiomeArray.length && i < biomeShortArray.length; ++i) {
-                int generationId = biomeShortArray[i];
-                com.pg85.otg.common.LocalBiome biome = configProvider.getBiomeByOTGIdOrNull(generationId);
-                chunkBiomeArray[i] = (byte) (biome != null && biome.getIds() != null ? biome.getIds().getSavedId() : 0);
+
+        long cacheKey = ChunkPos.asLong(chunk.x, chunk.z);
+        byte[] saved = BIOME_ARRAY_CACHE.get(cacheKey);
+        if (saved == null) {
+            int[] biomeShortArray;
+            synchronized (biomeGenerator) {
+                biomeShortArray = biomeGenerator.getBiomes(null, chunk.x * 16, chunk.z * 16, 16, 16,
+                        com.pg85.otg.generator.biome.OutputType.DEFAULT_FOR_WORLD);
+            }
+            if (biomeShortArray == null) {
+                return;
+            }
+            saved = new byte[chunkBiomeArray.length];
+            for (int i = 0; i < saved.length && i < biomeShortArray.length; ++i) {
+                com.pg85.otg.common.LocalBiome biome = configProvider.getBiomeByOTGIdOrNull(biomeShortArray[i]);
+                saved[i] = (byte) (biome != null && biome.getIds() != null ? biome.getIds().getSavedId() : 0);
+            }
+            if (BIOME_ARRAY_CACHE.size() >= BIOME_ARRAY_CACHE_MAX) {
+                BIOME_ARRAY_CACHE.clear();
+            }
+            byte[] prev = BIOME_ARRAY_CACHE.putIfAbsent(cacheKey, saved);
+            if (prev != null) {
+                saved = prev;
             }
         }
+        System.arraycopy(saved, 0, chunkBiomeArray, 0, Math.min(saved.length, chunkBiomeArray.length));
     }
 
     public static void clear() {

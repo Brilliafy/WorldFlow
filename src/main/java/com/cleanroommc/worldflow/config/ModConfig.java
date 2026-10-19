@@ -39,7 +39,7 @@ public class ModConfig {
         @Config.Comment("Maximum concurrent chunks in-flight across all generation pipeline stages.")
         @Config.RangeInt(min = 8, max = 512)
         @Config.Name("Max In-Flight Generations")
-        public int maxInFlightGenerations = 32;
+        public int maxInFlightGenerations = 96;
 
         @Config.Comment("Force falling blocks (sand, gravel) to fall instantly during off-thread generation instead of spawning EntityFallingBlock.")
         @Config.Name("Force Instant Falling During Generation")
@@ -48,6 +48,14 @@ public class ModConfig {
         @Config.Comment("Enable thread-local generation-world isolation barrier.")
         @Config.Name("Enable ThreadLocal Isolation")
         public boolean enableThreadLocalWorldView = true;
+
+        @Config.Comment("Skip chunk.checkLight() during publish (fast pregen; chunks relight when loaded by a player).")
+        @Config.Name("Skip Publish Lighting")
+        public boolean skipPublishLighting = false;
+
+        @Config.Comment("Fire Forge PopulateChunkEvent.Post / ChunkEvent.Load for pipeline chunks. Disable only for measurement.")
+        @Config.Name("Fire Chunk Events On Publish")
+        public boolean fireChunkEventsOnPublish = true;
 
         @Config.Comment("Enable concurrent OTG/Dregora terrain generation via per-worker ChunkProviderOTG.")
         @Config.Name("Enable Concurrent OTG Terrain")

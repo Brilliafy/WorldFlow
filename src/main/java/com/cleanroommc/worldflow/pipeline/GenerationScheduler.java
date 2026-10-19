@@ -98,30 +98,17 @@ public class GenerationScheduler {
         // No-op in pure-predicate publish architecture: publish readiness is evaluated on demand via canPublish()
     }
 
+    /**
+     * A chunk is publishable as soon as its own decoration completed.
+     *
+     * <p>The previous implementation required all 8 neighbours to be decorated too. With the
+     * in-flight cap this is a deadlock: decorated chunks cannot publish, so the cap fills with
+     * them and the neighbours they wait for can never be admitted. Late neighbour writes are
+     * safe because ThreadLocalWorldView.setBlockState synchronises on the published chunk and
+     * marks it dirty, so the write is persisted.</p>
+     */
     public boolean canPublish(StatusHolder holder) {
-        if (holder == null || !holder.isOwnDecorationDone()) {
-            return false;
-        }
-        int cx = holder.getPos().x;
-        int cz = holder.getPos().z;
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                if (dx == 0 && dz == 0) continue;
-                long nKey = ChunkPos.asLong(cx + dx, cz + dz);
-                StatusHolder nHolder = this.inFlight.get(nKey);
-                if (nHolder != null) {
-                    if (nHolder.getTargetStatus() == ChunkStatus.FULL && !nHolder.isOwnDecorationDone() && !nHolder.isDone()) {
-                        return false;
-                    }
-                    continue;
-                }
-                StatusHolder pending = this.pendingRequests.get(nKey);
-                if (pending != null && pending.getTargetStatus() == ChunkStatus.FULL && !pending.isOwnDecorationDone() && !pending.isDone()) {
-                    return false;
-                }
-            }
-        }
-        return true;
+        return holder != null && holder.isOwnDecorationDone();
     }
 
     public List<ChunkPos> getOwedBy(StatusHolder holder) {
@@ -724,6 +711,7 @@ public class GenerationScheduler {
 
             // 2. Standard population (ores, flora, structures) with bounded lock wait
             boolean isOtg = generator.getClass().getName().startsWith("com.pg85.otg.");
+            long populateStart = System.nanoTime();
             GeneratorSafetyLevel genSafety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
             if (isOtg || genSafety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
@@ -750,8 +738,16 @@ public class GenerationScheduler {
                 generator.populate(pos.x, pos.z);
             }
 
+            if (isOtg) {
+                this.totalOtgPopulateNanos.addAndGet(System.nanoTime() - populateStart);
+                this.otgPopulateCount.incrementAndGet();
+            }
+
             // 3. Forge GameRegistry world generators (thread-safe and serialized per-generator)
+            long forgeStart = System.nanoTime();
             generateModWorldIsolated(pos.x, pos.z, world, generator, provider, workerRand);
+            this.totalForgeGenNanos.addAndGet(System.nanoTime() - forgeStart);
+            this.forgeGenCount.incrementAndGet();
 
             proto.setTerrainPopulated(true);
             holder.setCurrentStatus(ChunkStatus.LIGHT);
@@ -837,6 +833,11 @@ public class GenerationScheduler {
             world.addScheduledTask(action);
         }
     }
+
+    public final java.util.concurrent.atomic.AtomicLong totalOtgPopulateNanos = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong otgPopulateCount = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong totalForgeGenNanos = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong forgeGenCount = new java.util.concurrent.atomic.AtomicLong();
 
     private static volatile List<IWorldGenerator> cachedSortedGenerators;
 
@@ -958,10 +959,10 @@ public class GenerationScheduler {
     }
 
     private void putCarverCache(long key, ProtoChunk proto) {
-        if (this.carverCache.size() > 512) {
+        if (this.carverCache.size() > 8192) {
             Iterator<Long> it = this.carverCache.keySet().iterator();
             int evicted = 0;
-            while (it.hasNext() && evicted < 64) {
+            while (it.hasNext() && evicted < 1024) {
                 it.next();
                 it.remove();
                 evicted++;
@@ -1018,9 +1019,15 @@ public class GenerationScheduler {
         double avgBaseMs = baseCount > 0 ? (this.totalBaseGenNanos.get() / 1_000_000.0) / baseCount : 0.0;
         double avgFeatMs = featCount > 0 ? (this.totalFeaturesNanos.get() / 1_000_000.0) / featCount : 0.0;
         int queueDepth = PublishManager.INSTANCE.getPendingCount();
+        long otgN = this.otgPopulateCount.get();
+        long forgeN = this.forgeGenCount.get();
+        long lightN = PublishManager.INSTANCE.totalLightCount.get();
+        double avgOtgMs = otgN > 0 ? (this.totalOtgPopulateNanos.get() / 1_000_000.0) / otgN : 0.0;
+        double avgForgeMs = forgeN > 0 ? (this.totalForgeGenNanos.get() / 1_000_000.0) / forgeN : 0.0;
+        double avgLightMs = lightN > 0 ? (PublishManager.INSTANCE.totalLightNanos.get() / 1_000_000.0) / lightN : 0.0;
 
         WorldFlow.LOGGER.info(String.format(
-                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | Serialized: %d | Parallel: %d | Guards blocked: %d | Workers: base=%d feat=%d (auto)",
+                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | OTG: %.1fms | ForgeGen: %.1fms | Light: %.1fms | Serialized: %d | Parallel: %d | Guards blocked: %d | Workers: base=%d feat=%d (auto)",
                 chunksPerSec,
                 chunksPerMin,
                 totalPublished,
@@ -1030,6 +1037,9 @@ public class GenerationScheduler {
                 this.inFlight.size(),
                 avgBaseMs,
                 avgFeatMs,
+                avgOtgMs,
+                avgForgeMs,
+                avgLightMs,
                 this.serializedCount.get(),
                 this.parallelCount.get(),
                 this.guardsBlockedCount.get(),
