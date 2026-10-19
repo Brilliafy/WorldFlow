@@ -193,7 +193,8 @@ public abstract class WorldServerMixin {
         WorldServer world = (WorldServer) (Object) this;
         if (world.getMinecraftServer() != null && !world.getMinecraftServer().isCallingFromMinecraftThread()) {
             WorldFlow.LOGGER.warn("[WorldFlow] Off-thread WorldServer.onEntityAdded detected for {} on thread {}! Staging to tick thread.",
-                    entityIn != null ? entityIn.getName() : "null", Thread.currentThread().getName());
+                    entityIn != null ? entityIn.getName() : "null", Thread.currentThread().getName(),
+                    new Throwable("off-thread entity add"));
             if (entityIn != null) {
                 CascadeBlockBuffer.INSTANCE.stageEntity(world, entityIn);
             }

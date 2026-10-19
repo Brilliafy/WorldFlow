@@ -4,7 +4,11 @@ import com.pg85.otg.configuration.biome.BiomeConfig;
 import com.pg85.otg.common.LocalBiome;
 import com.pg85.otg.common.LocalWorld;
 import com.pg85.otg.generator.ObjectSpawner;
+import com.pg85.otg.generator.resource.Resource;
+import com.pg85.otg.customobjects.structures.CustomStructureCache;
 import com.pg85.otg.util.ChunkCoordinate;
+import com.cleanroommc.worldflow.pipeline.otg.WorldFlowLockable;
+import com.cleanroommc.worldflow.pipeline.otg.OTGStructureService;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -13,6 +17,7 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.Random;
+import java.util.concurrent.locks.ReentrantLock;
 
 
 /** Phase timings for OTG population, surfaced in WorldFlow metrics. */
@@ -35,6 +40,64 @@ public abstract class ObjectSpawnerMixin {
             return world.placeDefaultStructures(rand, chunkCoord);
         } finally {
             com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
+        }
+    }
+
+    @org.spongepowered.asm.mixin.Shadow
+    private com.pg85.otg.common.LocalWorld world;
+    @org.spongepowered.asm.mixin.Shadow
+    private java.util.Random rand;
+
+    @Inject(method = "doPopulate", at = @At("HEAD"), remap = false)
+    private void worldflow$batchPlots(ChunkCoordinate chunkCoord, CallbackInfo ci) {
+        com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.clearBatch();
+        if (this.world != null && this.world.isBo4Enabled()) {
+            com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.executePlotBatch(
+                    this.world.getStructureCache(), this.rand, chunkCoord);
+        }
+    }
+
+    @Inject(method = "doPopulate", at = @At("RETURN"), remap = false)
+    private void worldflow$clearBatch(ChunkCoordinate chunkCoord, CallbackInfo ci) {
+        com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.clearBatch();
+    }
+
+    @Redirect(method = "processResourcesBeforeBo4s", at = @At(value = "INVOKE",
+            target = "Lcom/pg85/otg/generator/resource/Resource;process(Lcom/pg85/otg/common/LocalWorld;Ljava/util/Random;ZLcom/pg85/otg/util/ChunkCoordinate;)V"),
+            remap = false)
+    private void worldflow$lockedProcessBefore(Resource resource, LocalWorld world, Random random, boolean village, ChunkCoordinate coord) {
+        ReentrantLock lock = ((WorldFlowLockable) resource).worldflow$lock();
+        lock.lock();
+        try {
+            resource.process(world, random, village, coord);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Redirect(method = "processResourcesAfterBo4s", at = @At(value = "INVOKE",
+            target = "Lcom/pg85/otg/generator/resource/Resource;process(Lcom/pg85/otg/common/LocalWorld;Ljava/util/Random;ZLcom/pg85/otg/util/ChunkCoordinate;)V"),
+            remap = false)
+    private void worldflow$lockedProcessAfter(Resource resource, LocalWorld world, Random random, boolean village, ChunkCoordinate coord) {
+        ReentrantLock lock = ((WorldFlowLockable) resource).worldflow$lock();
+        lock.lock();
+        try {
+            resource.process(world, random, village, coord);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Redirect(method = "spawnBO4", at = @At(value = "INVOKE",
+            target = "Lcom/pg85/otg/customobjects/structures/CustomStructureCache;spawnBo4Chunk(Lcom/pg85/otg/util/ChunkCoordinate;Lcom/pg85/otg/util/ChunkCoordinate;)V"),
+            remap = false)
+    private void worldflow$lockedSpawnBo4(CustomStructureCache cache, ChunkCoordinate coord, ChunkCoordinate pop) {
+        java.util.concurrent.locks.Lock lock = OTGStructureService.STRUCTURE_CACHE_LOCK.readLock();
+        lock.lock();
+        try {
+            cache.spawnBo4Chunk(coord, pop);
+        } finally {
+            lock.unlock();
         }
     }
 

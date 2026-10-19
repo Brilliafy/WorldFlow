@@ -301,8 +301,15 @@ public class PublishManager {
      * Runs on the main thread every 5s; mods like nuclearcraft iterate this exact list and crash.
      */
     private void tileEntityHygiene(WorldServer world) {
-        // Run every tick: the server thread may add a TE and a later write in the same tick can
-        // replace its block, and nuclearcraft scans at the very start of the next tick.
+        // Per-chunk sanitisation at publish handles the common case. The global sweep is a
+        // safety net for mods that write TEs directly, and it is O(all loaded TEs): running
+        // it every tick (or on every quiesce-drain iteration) stalls saves on large pregens.
+        if (GenerationScheduler.getInstance().isQuiescing()) {
+            return;
+        }
+        if ((++this.hygieneTickCounter % 100) != 0) {
+            return;
+        }
         try {
             int removed = 0;
             java.util.Iterator<net.minecraft.tileentity.TileEntity> it = world.loadedTileEntityList.iterator();

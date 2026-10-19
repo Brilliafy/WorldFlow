@@ -20,7 +20,9 @@
     "ForgeWorldHeightMixin",
     "ResourceMixin",
     "ForgeWorldMaterialMixin",
-    "CustomObjectGenMixin"
+    "CustomObjectGenMixin",
+    "ForgeWorldBiomeCacheMixin",
+    "ResourceLockMixin"
   ],
   "server": [],
   "client": []

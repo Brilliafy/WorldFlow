@@ -52,6 +52,9 @@ public class GenerationScheduler {
     /** Wall-clock deadline until which external producers must not submit new chunks. */
     private final AtomicLong quiescingUntilMs = new AtomicLong(0L);
 
+    /** Separate window held for the whole saveAll call; drain windows must not clear it. */
+    private final AtomicLong saveWindowUntilMs = new AtomicLong(0L);
+
     public final AtomicLong totalGenerationsRequested = new AtomicLong(0);
     private final long pipelineStartTimeMs = System.currentTimeMillis();
     private final AtomicLong windowStartTimeMs = new AtomicLong(0);
@@ -329,19 +332,34 @@ public class GenerationScheduler {
         return requestChunk(world, x, z, ChunkStatus.FULL, priority);
     }
 
+    /**
+     * True only for the actual generation pools. The old {@code startsWith("WorldFlow-")}
+     * also matched "WorldFlow-Benchmark" and "WorldFlow-Structures", which made external
+     * producers bypass the in-flight cap, the save quiesce, and the off-thread disk guard.
+     */
+    private static boolean isGenerationWorkerThread() {
+        String name = Thread.currentThread().getName();
+        return name.startsWith("WorldFlow-BaseGen-") || name.startsWith("WorldFlow-Features-");
+    }
+
     /** External producers wait out a save; workers and the server thread never do. */
     private void awaitQuiesce(WorldServer world) {
-        if (System.currentTimeMillis() >= this.quiescingUntilMs.get()) {
-            return;
-        }
-        if (Thread.currentThread().getName().startsWith("WorldFlow-")) {
+        if (isGenerationWorkerThread()) {
             return;
         }
         if (world != null && world.getMinecraftServer() != null
                 && world.getMinecraftServer().isCallingFromMinecraftThread()) {
             return;
         }
-        while (System.currentTimeMillis() < this.quiescingUntilMs.get()) {
+        // Re-read the window every iteration: the drain clears it as soon as the pipeline
+        // is empty. A snapshot made producers sleep for the whole window even when the
+        // drain had already finished. The hard cap bounds any stale/extended deadline.
+        long cap = System.currentTimeMillis() + 120_000L;
+        while (true) {
+            long now = System.currentTimeMillis();
+            if (now >= this.quiescingUntilMs.get() || now >= cap) {
+                return;
+            }
             try {
                 Thread.sleep(5L);
             } catch (InterruptedException e) {
@@ -349,6 +367,18 @@ public class GenerationScheduler {
                 return;
             }
         }
+    }
+
+    public boolean isQuiescing() {
+        return System.currentTimeMillis() < this.quiescingUntilMs.get();
+    }
+
+    public void beginSaveWindow(long maxBlockMs) {
+        this.saveWindowUntilMs.accumulateAndGet(System.currentTimeMillis() + Math.max(1000L, maxBlockMs), Math::max);
+    }
+
+    public void endSaveWindow() {
+        this.saveWindowUntilMs.set(0L);
     }
 
     public void beginQuiesce(long maxBlockMs) {
@@ -379,11 +409,23 @@ public class GenerationScheduler {
             return CompletableFuture.completedFuture(loaded);
         }
 
+        boolean isServerThread = world.getMinecraftServer() != null && world.getMinecraftServer().isCallingFromMinecraftThread();
+        boolean isWorkerThread = isGenerationWorkerThread();
+
         // 2. DISK-EXISTENCE GUARD: Check if chunk is saved on disk — NEVER overwrite existing world data!
         if (world.getChunkProvider().chunkLoader != null && world.getChunkProvider().chunkLoader.isChunkGeneratedAt(x, z)) {
-            Chunk diskChunk = world.getChunkProvider().loadChunk(x, z);
-            if (diskChunk != null) {
-                return CompletableFuture.completedFuture(diskChunk);
+            if (isServerThread || isWorkerThread) {
+                Chunk diskChunk = world.getChunkProvider().loadChunk(x, z);
+                if (diskChunk != null) {
+                    return CompletableFuture.completedFuture(diskChunk);
+                }
+            } else {
+                // External producers (bench/pregen threads) must not load chunks off-thread:
+                // that mutates loadedChunks and loadedEntityList concurrently with the tick.
+                // The chunk already exists, so it needs no generation; hand back the live
+                // instance if present, otherwise a completed null (callers that need the
+                // chunk itself run on the server thread).
+                return CompletableFuture.completedFuture(world.getChunkProvider().getLoadedChunk(x, z));
             }
         }
 
@@ -442,8 +484,6 @@ public class GenerationScheduler {
 
         // 6. In-flight backpressure / memory guard: Cap maximum concurrent in-flight generations
         int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
-        boolean isServerThread = world.getMinecraftServer() != null && world.getMinecraftServer().isCallingFromMinecraftThread();
-        boolean isWorkerThread = Thread.currentThread().getName().startsWith("WorldFlow-");
 
         if (this.inFlight.size() >= maxInFlight && !isWorkerThread && priority != GenerationPriority.IMMEDIATE) {
             if (!isServerThread) {
@@ -813,7 +853,15 @@ public class GenerationScheduler {
             boolean isOtg = generator.getClass().getName().startsWith("com.pg85.otg.");
             long populateStart = System.nanoTime();
             GeneratorSafetyLevel genSafety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
-            if (isOtg || genSafety == GeneratorSafetyLevel.SERIALIZE) {
+            if (isOtg) {
+                // OTG population is protected at a finer granularity: per-Resource locks
+                // (TreeGen lazy loads etc.), a structure-cache lock against plotting, and
+                // the shared world-gen lock around placeDefaultStructures. This lets the
+                // ore/tree/plant phases of different chunks run in parallel.
+                this.serializedCount.incrementAndGet();
+                recordSerializedGenerator(generator.getClass().getName());
+                generator.populate(pos.x, pos.z);
+            } else if (genSafety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
                 recordSerializedGenerator(generator.getClass().getName());
                 java.util.concurrent.locks.ReentrantLock lock = OTGParallelContext.getStructureLock(pos.x, pos.z);
@@ -824,8 +872,11 @@ public class GenerationScheduler {
                     Thread.currentThread().interrupt();
                 }
                 if (!acquired) {
-                    WorldFlow.LOGGER.warn("[WorldFlow] Timed out waiting for structure lock for chunk [{}, {}], falling back to main-thread serial", pos.x, pos.z);
-                    fallbackToMainThreadSerial(holder);
+                    // Nothing has been decorated yet, so a retry is safe and lossless.
+                    // Publishing via the fallback here dropped ores/trees/structures from
+                    // every chunk unlucky enough to wait behind a long BO4 plot.
+                    WorldFlow.LOGGER.warn("[WorldFlow] Timed out waiting for structure lock for chunk [{}, {}]; requeueing decoration", pos.x, pos.z);
+                    holder.resetFeaturesScheduled();
                     return;
                 }
                 try {
@@ -1398,10 +1449,14 @@ public class GenerationScheduler {
         // The window is extended by WorldServerSaveMixin; the deadline auto-expires if the
         // save never reports completion.
         beginQuiesce(timeoutMs + 5000L);
-        drainPendingRequests();
-        long deadline = System.currentTimeMillis() + timeoutMs;
-        boolean isServerThread = world.getMinecraftServer() != null && world.getMinecraftServer().isCallingFromMinecraftThread();
-        quiesceAndDrain0(world, timeoutMs, deadline, isServerThread);
+        try {
+            drainPendingRequests();
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            boolean isServerThread = world.getMinecraftServer() != null && world.getMinecraftServer().isCallingFromMinecraftThread();
+            quiesceAndDrain0(world, timeoutMs, deadline, isServerThread);
+        } finally {
+            endQuiesce();
+        }
     }
 
     private void quiesceAndDrain0(WorldServer world, long timeoutMs, long deadline, boolean isServerThread) {

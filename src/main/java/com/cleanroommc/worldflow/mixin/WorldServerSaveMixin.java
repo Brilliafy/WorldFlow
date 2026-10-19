@@ -20,12 +20,13 @@ public abstract class WorldServerSaveMixin {
     @Inject(method = "saveAll", at = @At("HEAD"))
     private void worldflow$beforeSaveAll(boolean silent, IProgressUpdate progress, CallbackInfo ci) {
         WorldServer world = (WorldServer) (Object) this;
-        GenerationScheduler.getInstance().beginQuiesce(300_000L);
+        GenerationScheduler.getInstance().beginSaveWindow(300_000L);
         GenerationScheduler.getInstance().quiesceAndDrain(world, 60_000L);
     }
 
     @Inject(method = "saveAll", at = @At("RETURN"))
     private void worldflow$afterSaveAll(boolean silent, IProgressUpdate progress, CallbackInfo ci) {
+        GenerationScheduler.getInstance().endSaveWindow();
         GenerationScheduler.getInstance().endQuiesce();
     }
 }

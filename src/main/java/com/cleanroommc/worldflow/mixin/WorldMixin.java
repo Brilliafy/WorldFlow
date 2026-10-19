@@ -19,6 +19,7 @@ import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import net.minecraft.world.EnumSkyBlock;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(value = World.class, priority = 500)
@@ -228,6 +229,30 @@ public abstract class WorldMixin {
         if (!this.isRemote && (Object) this instanceof WorldServer) {
             CascadeBlockBuffer.INSTANCE.stageEntity((WorldServer) (Object) this, entityIn);
             cir.setReturnValue(true);
+        }
+    }
+
+    /**
+     * Off-thread chunk loads (the pipeline's disk guard) used to add entities straight
+     * into {@code World.loadedEntityList}. SRP Mixins' mob-cap handler iterates that
+     * list every tick on the server thread and crashed with a CME. Defer the exact
+     * vanilla add to the next server tick instead of re-spawning (which would duplicate
+     * entities already present in the chunk's own entity lists).
+     */
+    @Shadow
+    protected abstract void loadEntities(java.util.Collection<Entity> entities);
+
+    @Inject(method = "loadEntities", at = @At("HEAD"), cancellable = true)
+    private void worldflow$deferOffThreadLoadEntities(java.util.Collection<Entity> entities, CallbackInfo ci) {
+        if (this.isRemote || !((Object) this instanceof WorldServer) || entities == null) {
+            return;
+        }
+        WorldServer worldServer = (WorldServer) (Object) this;
+        if (worldServer.getMinecraftServer() != null
+                && !worldServer.getMinecraftServer().isCallingFromMinecraftThread()) {
+            ci.cancel();
+            java.util.List<Entity> copy = new java.util.ArrayList<>(entities);
+            worldServer.addScheduledTask(() -> this.loadEntities(copy));
         }
     }
 

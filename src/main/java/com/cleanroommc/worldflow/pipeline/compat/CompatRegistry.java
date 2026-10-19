@@ -65,9 +65,9 @@ public class CompatRegistry {
         registerClass("FairyRingGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
         registerClass("vazkii.quark.world.world.FairyRingGenerator", GeneratorSafetyLevel.PARALLEL_SAFE);
 
-        // DynamicTrees tree generation -> PARALLEL_SAFE
-        registerClass("WorldGeneratorTrees", GeneratorSafetyLevel.PARALLEL_SAFE);
-        registerClass("com.ferreusveritas.dynamictrees.worldgen.WorldGeneratorTrees", GeneratorSafetyLevel.PARALLEL_SAFE);
+        // DynamicTrees' PoissonDiscProvider keeps a shared ArrayList of discs and is not
+        // thread-safe (ConcurrentModificationException under parallel decoration). Keep it
+        // serialized via the package rule above; do not whitelist it as parallel.
 
         // Explicitly keep serialized for complex cross-chunk structures
         registerClass("PirateShipGenerator", GeneratorSafetyLevel.SERIALIZE);

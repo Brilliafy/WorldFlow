@@ -31,16 +31,25 @@ public class OTGParallelContext {
      * sharding only protected the plotter against itself.
      */
     public static final int NUM_SHARDS = 1;
-    private static final java.util.concurrent.locks.ReentrantLock[] SHARDED_LOCKS = new java.util.concurrent.locks.ReentrantLock[] {
-            new java.util.concurrent.locks.ReentrantLock(true)
-    };
+    private static final java.util.concurrent.locks.ReentrantLock[] SHARDED_LOCKS = new java.util.concurrent.locks.ReentrantLock[NUM_SHARDS];
+
+    static {
+        for (int i = 0; i < NUM_SHARDS; i++) {
+            SHARDED_LOCKS[i] = new java.util.concurrent.locks.ReentrantLock();
+        }
+    }
 
     public static final java.util.concurrent.locks.ReentrantLock OTG_STRUCTURE_LOCK = SHARDED_LOCKS[0];
 
+    /**
+     * Shard by 8x8-chunk region: nearby chunks (whose BO4 structures can interact)
+     * stay serialized, while distant regions populate in parallel. Each worker owns a
+     * private ObjectSpawner (rand + cascade flags) and a thread-local biome cache.
+     */
     public static java.util.concurrent.locks.ReentrantLock getStructureLock(int chunkX, int chunkZ) {
-        int macroX = chunkX >> 1;
-        int macroZ = chunkZ >> 1;
-        int hash = ((macroX * 31) ^ macroZ) & (NUM_SHARDS - 1);
+        int regionX = chunkX >> 3;
+        int regionZ = chunkZ >> 3;
+        int hash = ((regionX * 31) ^ regionZ) & (NUM_SHARDS - 1);
         return SHARDED_LOCKS[hash];
     }
 

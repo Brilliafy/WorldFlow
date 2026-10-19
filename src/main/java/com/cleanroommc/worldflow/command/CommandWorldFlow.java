@@ -82,9 +82,47 @@ public class CommandWorldFlow extends CommandBase {
             case "hashchunk":
                 executeHashChunk(sender, rest);
                 return;
+            case "unloadarea":
+                executeUnloadArea(sender, rest);
+                return;
             default:
                 sender.sendMessage(new TextComponentString(TextFormatting.RED + "Usage: " + getUsage(sender)));
         }
+    }
+
+    private void executeUnloadArea(ICommandSender sender, String[] args) {
+        if (args.length < 3) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "Usage: /worldflow unloadarea <centerX> <centerZ> <radius>"));
+            return;
+        }
+        int cx;
+        int cz;
+        int radius;
+        try {
+            cx = Integer.parseInt(args[0]);
+            cz = Integer.parseInt(args[1]);
+            radius = Math.max(0, Math.min(256, Integer.parseInt(args[2])));
+        } catch (NumberFormatException e) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid arguments."));
+            return;
+        }
+        if (!(sender.getEntityWorld() instanceof WorldServer)) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "Not a server world."));
+            return;
+        }
+        WorldServer world = (WorldServer) sender.getEntityWorld();
+        int queued = 0;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                Chunk chunk = world.getChunkProvider().getLoadedChunk(cx + dx, cz + dz);
+                if (chunk != null) {
+                    world.getChunkProvider().queueUnload(chunk);
+                    queued++;
+                }
+            }
+        }
+        sender.sendMessage(new TextComponentString(TextFormatting.GREEN + "Queued unload for " + queued + " chunks around ["
+                + cx + ", " + cz + "] radius " + radius));
     }
 
     /**
