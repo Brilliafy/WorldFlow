@@ -20,6 +20,12 @@ public class OTGStructureService {
 
     public static final String THREAD_NAME = "WorldFlow-Structures";
 
+    /** Wall time spent waiting for the structure executor (contention indicator). */
+    public static final java.util.concurrent.atomic.AtomicLong TOTAL_WAIT_NANOS = new java.util.concurrent.atomic.AtomicLong();
+    /** Time the plot itself took on the structure thread. */
+    public static final java.util.concurrent.atomic.AtomicLong TOTAL_WORK_NANOS = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong CALL_COUNT = new java.util.concurrent.atomic.AtomicLong();
+
     private static final ExecutorService STRUCTURE_EXECUTOR = Executors.newSingleThreadExecutor(new ThreadFactory() {
         @Override
         public Thread newThread(Runnable r) {
@@ -40,9 +46,16 @@ public class OTGStructureService {
             return;
         }
 
+        long submitNanos = System.nanoTime();
         Future<?> future = STRUCTURE_EXECUTOR.submit(() -> {
-            cache.plotBo4Structures(rand, chunkCoord);
+            long workStart = System.nanoTime();
+            try {
+                cache.plotBo4Structures(rand, chunkCoord);
+            } finally {
+                TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);
+            }
         });
+        CALL_COUNT.incrementAndGet();
 
         try {
             // Bounded wait: plotting is idempotent and re-entrant calls can otherwise park a
@@ -59,6 +72,8 @@ public class OTGStructureService {
                 throw (RuntimeException) cause;
             }
             throw new RuntimeException(cause);
+        } finally {
+            TOTAL_WAIT_NANOS.addAndGet(System.nanoTime() - submitNanos);
         }
     }
 

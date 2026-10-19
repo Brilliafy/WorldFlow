@@ -254,6 +254,7 @@ public class GenerationScheduler {
                 long nKey = ChunkPos.asLong(cx + dx, cz + dz);
                 StatusHolder nHolder = this.inFlight.get(nKey);
                 if (nHolder != null && nHolder.getCurrentStatus() == ChunkStatus.CARVERS
+                        && nHolder.getTargetStatus() != ChunkStatus.CARVERS
                         && nHolder.isCarversDone() && !nHolder.isWorkerDone() && !nHolder.isDone()) {
                     checkAndTriggerFeaturesIfReady(nHolder);
                 }
@@ -262,7 +263,8 @@ public class GenerationScheduler {
     }
 
     private void checkAndTriggerFeaturesIfReady(StatusHolder holder) {
-        if (holder == null || holder.isDone() || holder.isWorkerDone()) {
+        if (holder == null || holder.isDone() || holder.isWorkerDone()
+                || holder.getTargetStatus() == ChunkStatus.CARVERS) {
             return;
         }
         WorldServer world = holder.getWorld();
@@ -488,6 +490,13 @@ public class GenerationScheduler {
                 }
             }
         } else if (stage == ChunkStatus.CARVERS) {
+            if (holder.getTargetStatus() == ChunkStatus.CARVERS) {
+                if (holder.isCarversDone() && !holder.isDone()) {
+                    holder.getFuture().complete(holder.getProtoChunk().getChunk());
+                    removeInFlight(holder.getChunkKey());
+                }
+                return;
+            }
             if (holder.isCarversDone() && !holder.isWorkerDone()) {
                 long ageMs = holder.getFeaturesScheduledAtNanos() > 0L
                         ? (now - holder.getFeaturesScheduledAtNanos()) / 1_000_000L : Long.MAX_VALUE;
@@ -498,8 +507,10 @@ public class GenerationScheduler {
                     holder.setFeaturesRunning(false);
                     holder.resetFeaturesScheduled();
                 }
+                // 30s, not 1s: a task that is merely QUEUED is not stuck. Retrying after 1s
+                // duplicated decoration for every chunk waiting in a >1s queue.
                 if (!holder.isFeaturesRunning()
-                        && (!holder.isFeaturesScheduled() || ageMs > 1000L)) {
+                        && (!holder.isFeaturesScheduled() || ageMs > 30_000L)) {
                     holder.resetFeaturesScheduled();
                     checkAndScheduleFeatures(holder);
                 }
@@ -524,6 +535,15 @@ public class GenerationScheduler {
                 GenerationWorkerPool.getInstance().executeBaseGen(holder, () -> executeBaseGeneration(holder));
             }
         } else if (current == ChunkStatus.CARVERS) {
+            if (holder.getTargetStatus() == ChunkStatus.CARVERS) {
+                // Neighbour-only request: it exists to supply terrain to a decorating chunk.
+                // Decorating it would cascade to its own 8 neighbours (queue explosion).
+                if (holder.isCarversDone() && !holder.isDone()) {
+                    holder.getFuture().complete(holder.getProtoChunk().getChunk());
+                    removeInFlight(holder.getChunkKey());
+                }
+                return;
+            }
             // Stage CARVERS -> FEATURES: decorate with a best-effort 3x3 neighbourhood
             checkAndScheduleFeatures(holder);
         } else if (current == ChunkStatus.FEATURES || current == ChunkStatus.LIGHT) {
@@ -624,8 +644,11 @@ public class GenerationScheduler {
                     }
                     continue;
                 }
-                // Warm the neighbour for future chunks; do not wait for it.
-                requestCarversChunk(world, nx, nz);
+                // Deliberately do NOT request neighbour carvers from here. Every decorating
+                // chunk did that for its 8 neighbours, which multiplied the pipeline by ~8x
+                // (measured: 8875 queued tasks for a 625-chunk bench) and starved the pools.
+                // Decoration proceeds with whatever terrain is already available; chunks are
+                // decorated when their own turn comes.
             }
         }
 
@@ -839,6 +862,17 @@ public class GenerationScheduler {
     public final java.util.concurrent.atomic.AtomicLong totalForgeGenNanos = new java.util.concurrent.atomic.AtomicLong();
     public final java.util.concurrent.atomic.AtomicLong forgeGenCount = new java.util.concurrent.atomic.AtomicLong();
 
+    public final java.util.concurrent.atomic.AtomicLong generatorLockWaitNanos = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong generatorLockWaits = new java.util.concurrent.atomic.AtomicLong();
+
+    private final java.util.Map<String, java.util.concurrent.atomic.AtomicLong> genNanos = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, java.util.concurrent.atomic.AtomicLong> genCalls = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private void recordGeneratorTime(String name, long nanos) {
+        this.genNanos.computeIfAbsent(name, k -> new java.util.concurrent.atomic.AtomicLong()).addAndGet(nanos);
+        this.genCalls.computeIfAbsent(name, k -> new java.util.concurrent.atomic.AtomicLong()).incrementAndGet();
+    }
+
     private static volatile List<IWorldGenerator> cachedSortedGenerators;
 
     private void generateModWorldIsolated(int chunkX, int chunkZ, WorldServer world, IChunkGenerator chunkGenerator, ChunkProviderServer chunkProvider, Random rand) {
@@ -878,23 +912,34 @@ public class GenerationScheduler {
                 recordSerializedGenerator(generator.getClass().getName());
                 ReentrantLock lock = this.generatorLocks.computeIfAbsent(generator, g -> new ReentrantLock());
                 boolean acquired = false;
+                long lockWaitStart = System.nanoTime();
                 try {
                     acquired = lock.tryLock(10, TimeUnit.SECONDS);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
+                } finally {
+                    this.generatorLockWaitNanos.addAndGet(System.nanoTime() - lockWaitStart);
+                    this.generatorLockWaits.incrementAndGet();
                 }
                 if (acquired) {
+                    long genStart = System.nanoTime();
                     try {
                         generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
                     } finally {
                         lock.unlock();
+                        recordGeneratorTime(generator.getClass().getSimpleName(), System.nanoTime() - genStart);
                     }
                 } else {
                     WorldFlow.LOGGER.warn("[WorldFlow] Timed out acquiring lock for generator {} in chunk [{}, {}]", generator.getClass().getName(), chunkX, chunkZ);
                 }
             } else if (safety == GeneratorSafetyLevel.PARALLEL_SAFE) {
                 this.parallelCount.incrementAndGet();
-                generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                long genStart = System.nanoTime();
+                try {
+                    generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                } finally {
+                    recordGeneratorTime(generator.getClass().getSimpleName(), System.nanoTime() - genStart);
+                }
             } else if (safety == GeneratorSafetyLevel.UNSAFE) {
                 this.serializedCount.incrementAndGet();
                 recordSerializedGenerator(generator.getClass().getName());
@@ -1025,9 +1070,25 @@ public class GenerationScheduler {
         double avgOtgMs = otgN > 0 ? (this.totalOtgPopulateNanos.get() / 1_000_000.0) / otgN : 0.0;
         double avgForgeMs = forgeN > 0 ? (this.totalForgeGenNanos.get() / 1_000_000.0) / forgeN : 0.0;
         double avgLightMs = lightN > 0 ? (PublishManager.INSTANCE.totalLightNanos.get() / 1_000_000.0) / lightN : 0.0;
+        long plotN = com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.CALL_COUNT.get();
+        double avgPlotWorkMs = plotN > 0 ? (com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.TOTAL_WORK_NANOS.get() / 1_000_000.0) / plotN : 0.0;
+        double avgPlotWaitMs = plotN > 0 ? (com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.TOTAL_WAIT_NANOS.get() / 1_000_000.0) / plotN : 0.0;
+        long lockWaits = this.generatorLockWaits.get();
+        double avgGenLockWaitMs = lockWaits > 0 ? (this.generatorLockWaitNanos.get() / 1_000_000.0) / lockWaits : 0.0;
+
+        if (!this.genCalls.isEmpty() && (now % 5 == 0)) {
+            this.genCalls.entrySet().stream()
+                    .sorted((a, b) -> Long.compare(b.getValue().get(), a.getValue().get()))
+                    .limit(5)
+                    .forEach(e -> {
+                        long calls = e.getValue().get();
+                        long nanos = this.genNanos.getOrDefault(e.getKey(), new java.util.concurrent.atomic.AtomicLong()).get();
+                        WorldFlow.LOGGER.info("[WorldFlow GenProf] {} calls={} avg={}ms", e.getKey(), calls, calls > 0 ? nanos / 1_000_000L / calls : 0);
+                    });
+        }
 
         WorldFlow.LOGGER.info(String.format(
-                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | OTG: %.1fms | ForgeGen: %.1fms | Light: %.1fms | Serialized: %d | Parallel: %d | Guards blocked: %d | Workers: base=%d feat=%d (auto)",
+                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | OTG: %.1fms | ForgeGen: %.1fms | Light: %.1fms | Plot: %.1fms (wait %.1fms) | GenLockWait: %.1fms | Serialized: %d | Parallel: %d | Guards blocked: %d | Workers: base=%d feat=%d (auto)",
                 chunksPerSec,
                 chunksPerMin,
                 totalPublished,
@@ -1040,6 +1101,9 @@ public class GenerationScheduler {
                 avgOtgMs,
                 avgForgeMs,
                 avgLightMs,
+                avgPlotWorkMs,
+                avgPlotWaitMs,
+                avgGenLockWaitMs,
                 this.serializedCount.get(),
                 this.parallelCount.get(),
                 this.guardsBlockedCount.get(),
