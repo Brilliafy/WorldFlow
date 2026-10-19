@@ -372,9 +372,16 @@ public class GenerationScheduler {
             pending.setTargetStatus(targetStatus);
             if (priority == GenerationPriority.IMMEDIATE) {
                 this.pendingRequests.remove(key);
-                this.inFlight.put(key, pending);
-                registerPendingWriters(pending);
-                advanceChunk(pending);
+                // Never use an unconditional put here: another thread may have admitted
+                // a holder for the same chunk in between. Replacing it would strand that
+                // holder's future (and its callers) forever.
+                StatusHolder prev = this.inFlight.putIfAbsent(key, pending);
+                if (prev != null && prev != pending) {
+                    chainFutures(prev, pending);
+                } else {
+                    registerPendingWriters(pending);
+                    advanceChunk(pending);
+                }
             }
             return pending.getFuture();
         }
@@ -1294,11 +1301,16 @@ public class GenerationScheduler {
         StatusHolder removed = this.inFlight.remove(key);
         if (removed != null && !removed.isDone()) {
             // Every removal path is supposed to complete the holder's futures first.
-            // If one doesn't, callers waiting on getFuture() would hang forever.
-            WorldFlow.LOGGER.warn("[WorldFlow] removeInFlight dropped an incomplete holder [{}, {}] stage={} ownDone={} workerDone={} carversDone={}",
+            // If one doesn't, callers waiting on getFuture() would hang forever, so
+            // complete them here as a last-resort safety net.
+            Chunk fallback = removed.getProtoChunk() != null ? removed.getProtoChunk().getChunk() : null;
+            WorldFlow.LOGGER.warn("[WorldFlow] removeInFlight dropped an incomplete holder [{}, {}] stage={} ownDone={} workerDone={} carversDone={}; completing futures",
                     removed.getPos().x, removed.getPos().z, removed.getCurrentStatus(),
                     removed.isOwnDecorationDone(), removed.isWorkerDone(), removed.getCarversFuture().isDone(),
                     new Throwable("removeInFlight caller"));
+            removed.getCarversFuture().complete(fallback);
+            removed.getWorkerDoneFuture().complete(fallback);
+            removed.getFuture().complete(fallback);
         }
         drainPendingRequests();
     }
