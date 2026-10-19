@@ -17,7 +17,8 @@
     "MaterialHelperMixin",
     "ObjectSpawnerMixin",
     "ForgeWorldHeightMixin",
-    "ResourceMixin"
+    "ResourceMixin",
+    "ForgeWorldMaterialMixin"
   ],
   "server": [],
   "client": []

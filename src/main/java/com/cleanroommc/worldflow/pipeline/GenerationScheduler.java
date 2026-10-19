@@ -275,6 +275,7 @@ public class GenerationScheduler {
 
         Map<Long, ProtoChunk> neighbourhood = new HashMap<>();
         neighbourhood.put(holder.getChunkKey(), holder.getProtoChunk());
+        boolean allNeighboursReady = true;
 
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
@@ -626,6 +627,7 @@ public class GenerationScheduler {
         // (to warm the carver cache) but decoration proceeds immediately.
         Map<Long, ProtoChunk> neighbourhood = new HashMap<>();
         neighbourhood.put(holder.getChunkKey(), holder.getProtoChunk());
+        boolean allNeighboursReady = true;
 
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
@@ -647,19 +649,25 @@ public class GenerationScheduler {
                 if (nHolder != null) {
                     if (nHolder.getCurrentStatus().isAtLeast(ChunkStatus.CARVERS)) {
                         neighbourhood.put(nKey, nHolder.getProtoChunk());
-                    } else if (nHolder.markBaseGenScheduled()) {
-                        GenerationWorkerPool.getInstance().executeBaseGen(nHolder, () -> executeBaseGeneration(nHolder));
+                    } else {
+                        allNeighboursReady = false;
+                        if (nHolder.markBaseGenScheduled()) {
+                            GenerationWorkerPool.getInstance().executeBaseGen(nHolder, () -> executeBaseGeneration(nHolder));
+                        }
                     }
                     continue;
                 }
-                // Deliberately do NOT request neighbour carvers from here. Every decorating
-                // chunk did that for its 8 neighbours, which multiplied the pipeline by ~8x
-                // (measured: 8875 queued tasks for a 625-chunk bench) and starved the pools.
-                // Decoration proceeds with whatever terrain is already available; chunks are
-                // decorated when their own turn comes.
+                // Neighbour terrain is required for bit-identical decoration (structures span
+                // chunk borders). Request it and let the state machine retry - never block here.
+                allNeighboursReady = false;
+                requestCarversChunk(world, nx, nz);
             }
         }
 
+        if (!allNeighboursReady) {
+            // Watchdog retries within ~1s. Never block a worker on neighbour terrain.
+            return;
+        }
         if (holder.markFeaturesScheduled()) {
             GenerationWorkerPool.getInstance().executeFeatures(holder, () -> executeFeatures(holder, neighbourhood));
         }
