@@ -187,12 +187,28 @@ public class ThreadLocalWorldView {
             }
         }
 
-        // Outside neighbourhood and not loaded: STAGE in CascadeBlockBuffer to avoid cascading generation
+        // Outside neighbourhood and not loaded: STAGE in CascadeBlockBuffer to avoid cascading generation.
+        // Create the tile entity now so generators that place a chest and immediately query it
+        // (Roguelike loot tables) do not receive null.
+        net.minecraft.nbt.NBTTagCompound teNbt = null;
+        if (state.getBlock().hasTileEntity(state)) {
+            TileEntity stagedTe = state.getBlock().createTileEntity(world, state);
+            if (stagedTe != null) {
+                stagedTe.setWorld(world);
+                stagedTe.setPos(pos);
+                CascadeBlockBuffer.INSTANCE.stageTileEntity(world, pos, stagedTe);
+                teNbt = stagedTe.writeToNBT(new net.minecraft.nbt.NBTTagCompound());
+            } else {
+                CascadeBlockBuffer.INSTANCE.stageTileEntity(world, pos, null);
+            }
+        } else {
+            CascadeBlockBuffer.INSTANCE.stageTileEntity(world, pos, null);
+        }
         CascadeBlockBuffer.INSTANCE.stageBlock(
                 world,
                 pos,
                 state,
-                null,
+                teNbt,
                 ctx.generatorName != null ? ctx.generatorName : "ParallelGenWorker"
         );
         return true;
@@ -302,17 +318,30 @@ public class ThreadLocalWorldView {
         int chunkZ = pos.getZ() >> 4;
         long key = ChunkPos.asLong(chunkX, chunkZ);
 
-        ProtoChunk proto = ctx.neighbourhood.get(key);
+        ProtoChunk proto = ctx.lookup(key);
         if (proto != null) {
-            return proto.getTileEntity(pos);
+            TileEntity te = proto.getTileEntity(pos);
+            if (te != null) {
+                return te;
+            }
+            TileEntity stagedInProto = CascadeBlockBuffer.INSTANCE.getStagedTileEntity(world, pos);
+            if (stagedInProto != null) {
+                return stagedInProto;
+            }
+            return null;
         }
 
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
         if (loaded != null) {
-            return loaded.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+            TileEntity te = loaded.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+            if (te != null) {
+                return te;
+            }
         }
 
-        return null;
+        // Staged cross-chunk block: return the live TE instance so generators can
+        // configure it before the block is flushed into the real chunk.
+        return CascadeBlockBuffer.INSTANCE.getStagedTileEntity(world, pos);
     }
 
     public static boolean setTileEntity(World world, BlockPos pos, TileEntity tileEntity) {

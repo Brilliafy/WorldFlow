@@ -66,6 +66,25 @@ public class CascadeBlockBuffer {
         list.add(new StagedTick(pos, block, delay, priority));
     }
 
+    /** Live tile entities for staged blocks, so generators can query them before flush. */
+    private final Map<Integer, Map<Long, TileEntity>> stagedTileEntities = new ConcurrentHashMap<>();
+
+    public void stageTileEntity(World world, BlockPos pos, @Nullable TileEntity tileEntity) {
+        int dim = world.provider.getDimension();
+        Map<Long, TileEntity> map = this.stagedTileEntities.computeIfAbsent(dim, d -> new ConcurrentHashMap<>());
+        if (tileEntity == null) {
+            map.remove(pos.toLong());
+        } else {
+            map.put(pos.toLong(), tileEntity);
+        }
+    }
+
+    @Nullable
+    public TileEntity getStagedTileEntity(World world, BlockPos pos) {
+        Map<Long, TileEntity> map = this.stagedTileEntities.get(world.provider.getDimension());
+        return map != null ? map.get(pos.toLong()) : null;
+    }
+
     public void stageBlock(World world, BlockPos pos, IBlockState state, @Nullable NBTTagCompound teNbt, String sourceName) {
         int dim = world.provider.getDimension();
         int chunkX = pos.getX() >> 4;
@@ -178,7 +197,18 @@ public class CascadeBlockBuffer {
                 count++;
                 totalBlocksFlushed.incrementAndGet();
 
-                if (staged.tileEntityNbt != null) {
+                TileEntity liveTe = null;
+                Map<Long, TileEntity> teMap = this.stagedTileEntities.get(dim);
+                if (teMap != null) {
+                    liveTe = teMap.remove(pos.toLong());
+                }
+                if (liveTe != null) {
+                    // The generator already created and possibly mutated this TE (loot tables).
+                    liveTe.setWorld(world);
+                    liveTe.setPos(pos);
+                    chunk.addTileEntity(pos, liveTe);
+                    liveTe.markDirty();
+                } else if (staged.tileEntityNbt != null) {
                     TileEntity te = chunk.getTileEntity(pos, net.minecraft.world.chunk.Chunk.EnumCreateEntityType.IMMEDIATE);
                     if (te != null) {
                         te.readFromNBT(staged.tileEntityNbt);
