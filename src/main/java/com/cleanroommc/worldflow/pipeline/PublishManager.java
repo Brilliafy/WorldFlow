@@ -28,6 +28,13 @@ public class PublishManager {
     private final Queue<StatusHolder> pendingPublishQueue = new ConcurrentLinkedQueue<>();
     private final Queue<TePurge> tePurgeQueue = new ConcurrentLinkedQueue<>();
     public final AtomicLong totalChunksPublished = new AtomicLong(0);
+    public final java.util.concurrent.atomic.AtomicLong nanosInsert = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong nanosFlush = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong nanosSanitize = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong nanosOnLoad = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong nanosEvents = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong nanosPlayer = new java.util.concurrent.atomic.AtomicLong();
+    public final java.util.concurrent.atomic.AtomicLong publishCount = new java.util.concurrent.atomic.AtomicLong();
     public final AtomicLong totalLightNanos = new AtomicLong(0);
     public final AtomicLong totalLightCount = new AtomicLong(0);
 
@@ -145,21 +152,29 @@ public class PublishManager {
         }
 
         try {
+            long tPhase = System.nanoTime();
             // 2. Insert into live loadedChunks map with synchronization
             synchronized (world.getChunkProvider().loadedChunks) {
                 world.getChunkProvider().loadedChunks.put(key, chunk);
             }
+            this.nanosInsert.addAndGet(System.nanoTime() - tPhase);
 
             // 3. Flush any staged blocks that were waiting for this chunk
+            tPhase = System.nanoTime();
             CascadeBlockBuffer.INSTANCE.flushChunk(world, chunk);
+            this.nanosFlush.addAndGet(System.nanoTime() - tPhase);
 
             // 3b. Tile-entity atomicity: a TE whose block does not support one (or was replaced
             //     by a structure write, e.g. bedrock) crashes mods on the next tick
             //     (rustic cabinets on bedrock + nuclearcraft radiation scan). Drop them before
             //     onLoad() registers the chunk's TEs into World.loadedTileEntityList.
+            tPhase = System.nanoTime();
             sanitizeTileEntities(world, chunk);
+            this.nanosSanitize.addAndGet(System.nanoTime() - tPhase);
 
+            tPhase = System.nanoTime();
             chunk.onLoad();
+            this.nanosOnLoad.addAndGet(System.nanoTime() - tPhase);
 
             // 4. Tick-thread lighting for the new chunk (measurable, optional).
             boolean skipLight = com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY != null
@@ -179,6 +194,7 @@ public class PublishManager {
             // 5. Fire Forge events on the server tick thread (only ~10 mods listen; measurable)
             boolean fireEvents = com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY == null
                     || com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY.fireChunkEventsOnPublish;
+            tPhase = System.nanoTime();
             if (fireEvents) {
                 try {
                     MinecraftForge.EVENT_BUS.post(new net.minecraftforge.event.terraingen.PopulateChunkEvent.Post(world.getChunkProvider().chunkGenerator, world, world.rand, cx, cz, false));
@@ -191,7 +207,9 @@ public class PublishManager {
                     WorldFlow.LOGGER.debug("[WorldFlow] Handled exception in ChunkEvent.Load", t);
                 }
             }
+            this.nanosEvents.addAndGet(System.nanoTime() - tPhase);
 
+            tPhase = System.nanoTime();
             // 6. Update PlayerChunkMapEntry and send packet to waiting players
             PlayerChunkMapEntry entry = world.getPlayerChunkMap().getEntry(cx, cz);
             if (entry != null) {
@@ -209,6 +227,7 @@ public class PublishManager {
                     world.getChunkProvider().queueUnload(chunk);
                 }
             }
+            this.nanosPlayer.addAndGet(System.nanoTime() - tPhase);
         } catch (Throwable t) {
             WorldFlow.LOGGER.error("[WorldFlow] Error publishing chunk [{}, {}]", cx, cz, t);
         } finally {
@@ -224,6 +243,7 @@ public class PublishManager {
             holder.getWorkerDoneFuture().complete(chunk);
             holder.getFuture().complete(chunk);
             this.totalChunksPublished.incrementAndGet();
+            this.publishCount.incrementAndGet();
             // Keep the carver cache entry: neighbour chunks still need this terrain for their
             // decoration. Evicting it on publish forced neighbours to regenerate base terrain.
             GenerationScheduler.getInstance().checkLogMetrics();

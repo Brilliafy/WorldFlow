@@ -14,7 +14,10 @@
     "CustomStructurePlotterMixin",
     "ArraysCacheManagerMixin",
     "CachedBiomeGeneratorMixin",
-    "MaterialHelperMixin"
+    "MaterialHelperMixin",
+    "ObjectSpawnerMixin",
+    "ForgeWorldHeightMixin",
+    "ResourceMixin"
   ],
   "server": [],
   "client": []

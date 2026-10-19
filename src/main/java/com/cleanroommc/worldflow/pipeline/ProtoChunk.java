@@ -74,6 +74,17 @@ public class ProtoChunk {
         return this.status.get().isAtLeast(required);
     }
 
+    /** Thread currently decorating this chunk: its own reads/writes need no locking. */
+    private volatile Thread ownerThread;
+
+    public void setOwnerThread(Thread thread) {
+        this.ownerThread = thread;
+    }
+
+    private boolean ownedByCurrentThread() {
+        return this.ownerThread == Thread.currentThread();
+    }
+
     private final ReentrantLock chunkLock = new ReentrantLock();
     private volatile boolean biomesFilled = false;
 
@@ -130,12 +141,11 @@ public class ProtoChunk {
         if (pos.getY() < 0 || pos.getY() >= 256) {
             return Blocks.AIR.getDefaultState();
         }
-        boolean acquired = false;
-        try {
-            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        if (ownedByCurrentThread()) {
+            Chunk own = this.underlyingChunk;
+            return own != null ? own.getBlockState(pos) : Blocks.AIR.getDefaultState();
         }
+        boolean acquired = this.chunkLock.tryLock();
         if (acquired) {
             try {
                 Chunk chunk = this.underlyingChunk;

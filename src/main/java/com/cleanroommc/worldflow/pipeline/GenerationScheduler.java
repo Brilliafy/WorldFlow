@@ -216,7 +216,9 @@ public class GenerationScheduler {
                 }
             }
         }
-        GenerationWorkerPool.getInstance().executeFeatures(holder, () -> executeFeatures(holder, neighbourhood));
+        if (holder.markFeaturesScheduled()) {
+            GenerationWorkerPool.getInstance().executeFeatures(holder, () -> executeFeatures(holder, neighbourhood));
+        }
     }
 
     public void notifyNeighboursOfCompletion(int cx, int cz) {
@@ -300,8 +302,12 @@ public class GenerationScheduler {
             }
         }
 
-        // All 3x3 neighbours are ready at CARVERS! Advance immediately to features
-        GenerationWorkerPool.getInstance().executeFeatures(holder, () -> executeFeatures(holder, neighbourhood));
+        // All 3x3 neighbours are ready at CARVERS! Advance immediately to features.
+        // The guard matters: without it every neighbour reaching CARVERS re-decorated this
+        // chunk (measured 2.3 feature executions per chunk).
+        if (holder.markFeaturesScheduled()) {
+            GenerationWorkerPool.getInstance().executeFeatures(holder, () -> executeFeatures(holder, neighbourhood));
+        }
     }
 
     private GenerationScheduler() {
@@ -560,6 +566,7 @@ public class GenerationScheduler {
 
         long startNanos = System.nanoTime();
         holder.setBaseGenRunning(true);
+        proto.setOwnerThread(Thread.currentThread());
         ThreadLocalWorldView.enter(world, pos, proto, "BaseGen");
         try {
             IChunkGenerator generator = WorkerGeneratorContext.get().getChunkGenerator(world);
@@ -587,6 +594,7 @@ public class GenerationScheduler {
             this.totalBaseGenCount.incrementAndGet();
             this.parallelCount.incrementAndGet();
             holder.setBaseGenRunning(false);
+            proto.setOwnerThread(null);
             checkLogMetrics();
         }
 
@@ -685,6 +693,7 @@ public class GenerationScheduler {
             holder.resetFeaturesScheduled();
             return;
         }
+        proto.setOwnerThread(Thread.currentThread());
         ThreadLocalWorldView.attachNeighbourhood(neighbourhood);
         try {
             ChunkProviderServer provider = world.getChunkProvider();
@@ -773,6 +782,14 @@ public class GenerationScheduler {
             this.forgeGenCount.incrementAndGet();
 
             proto.setTerrainPopulated(true);
+            // Apply staged structure blocks here, on the worker, while the chunk is still
+            // private. Doing it in publishChunk cost ~10-36ms of main-thread time per chunk.
+            try {
+                com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer.INSTANCE
+                        .flushChunkBlocksOnly(world, proto.getChunk());
+            } catch (Throwable flushErr) {
+                WorldFlow.LOGGER.debug("[WorldFlow] Off-thread block flush failed for chunk [{}, {}]", pos.x, pos.z, flushErr);
+            }
             holder.setCurrentStatus(ChunkStatus.LIGHT);
             holder.getWorkerDoneFuture().complete(proto.getChunk());
         } catch (Throwable t) {
@@ -786,6 +803,7 @@ public class GenerationScheduler {
             checkLogMetrics();
             IS_DECORATING.set(false);
             holder.setFeaturesRunning(false);
+            proto.setOwnerThread(null);
         }
 
         // Complete this writer and publish any chunks whose pending writers have reached 0
@@ -1073,6 +1091,17 @@ public class GenerationScheduler {
         long plotN = com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.CALL_COUNT.get();
         double avgPlotWorkMs = plotN > 0 ? (com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.TOTAL_WORK_NANOS.get() / 1_000_000.0) / plotN : 0.0;
         double avgPlotWaitMs = plotN > 0 ? (com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.TOTAL_WAIT_NANOS.get() / 1_000_000.0) / plotN : 0.0;
+        long pubN = PublishManager.INSTANCE.publishCount.get();
+        long pubDiv = Math.max(1, pubN);
+        double pubIns = PublishManager.INSTANCE.nanosInsert.get() / 1_000_000.0 / pubDiv;
+        double pubFlush = PublishManager.INSTANCE.nanosFlush.get() / 1_000_000.0 / pubDiv;
+        double pubSan = PublishManager.INSTANCE.nanosSanitize.get() / 1_000_000.0 / pubDiv;
+        double pubLoad = PublishManager.INSTANCE.nanosOnLoad.get() / 1_000_000.0 / pubDiv;
+        double pubEv = PublishManager.INSTANCE.nanosEvents.get() / 1_000_000.0 / pubDiv;
+        double pubPl = PublishManager.INSTANCE.nanosPlayer.get() / 1_000_000.0 / pubDiv;
+        double otgBefore = com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.avgMs(0);
+        double otgBo4 = com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.avgMs(1);
+        double otgAfter = com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.avgMs(2);
         long lockWaits = this.generatorLockWaits.get();
         double avgGenLockWaitMs = lockWaits > 0 ? (this.generatorLockWaitNanos.get() / 1_000_000.0) / lockWaits : 0.0;
 
@@ -1087,8 +1116,22 @@ public class GenerationScheduler {
                     });
         }
 
+        WorldFlow.LOGGER.info("[WorldFlow ResProf] {}", com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.topResources(5));
+
+        WorldFlow.LOGGER.info("[WorldFlow Counts] base={} features={} published={} inflight={}",
+                this.totalBaseGenCount.get(), this.totalFeaturesCount.get(),
+                PublishManager.INSTANCE.totalChunksPublished.get(), this.inFlight.size());
+
+        WorldFlow.LOGGER.info("[WorldFlow Pool] active base={} feat={} queue base={} feat={} workers base={} feat={}",
+                GenerationWorkerPool.getInstance().getBaseGenActiveCount(),
+                GenerationWorkerPool.getInstance().getFeaturesActiveCount(),
+                GenerationWorkerPool.getInstance().getBaseGenQueueSize(),
+                GenerationWorkerPool.getInstance().getFeaturesQueueSize(),
+                GenerationWorkerPool.getInstance().getBaseGenWorkerCount(),
+                GenerationWorkerPool.getInstance().getFeaturesWorkerCount());
+
         WorldFlow.LOGGER.info(String.format(
-                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | OTG: %.1fms | ForgeGen: %.1fms | Light: %.1fms | Plot: %.1fms (wait %.1fms) | GenLockWait: %.1fms | Serialized: %d | Parallel: %d | Guards blocked: %d | Workers: base=%d feat=%d (auto)",
+                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | OTG: %.1fms | ForgeGen: %.1fms | Light: %.1fms | Plot: %.1fms (wait %.1fms) | GenLockWait: %.1fms | Pub: flush %.1f load %.1f ev %.1f | OTG: res %.1f bo4 %.1f res2 %.1f | Serialized: %d | Parallel: %d | Guards blocked: %d | Workers: base=%d feat=%d (auto)",
                 chunksPerSec,
                 chunksPerMin,
                 totalPublished,
@@ -1104,6 +1147,8 @@ public class GenerationScheduler {
                 avgPlotWorkMs,
                 avgPlotWaitMs,
                 avgGenLockWaitMs,
+                pubFlush, pubLoad, pubEv,
+                otgBefore, otgBo4, otgAfter,
                 this.serializedCount.get(),
                 this.parallelCount.get(),
                 this.guardsBlockedCount.get(),

@@ -116,7 +116,8 @@ public class CascadeBlockBuffer {
         return list != null && !list.isEmpty();
     }
 
-    public int flushChunk(WorldServer world, Chunk chunk) {
+    /** Applies staged blocks only. Safe on a worker thread for a chunk not yet in the world. */
+    public int flushChunkBlocksOnly(WorldServer world, Chunk chunk) {
         int dim = world.provider.getDimension();
         ChunkPos chunkPos = chunk.getPos();
 
@@ -150,30 +151,54 @@ public class CascadeBlockBuffer {
         world.captureBlockSnapshots = false;
 
         try {
+            // Fast path: write straight into the chunk's section arrays.
+            // Chunk.setBlockState + World.markAndNotifyBlock do per-block light propagation and
+            // neighbour notifications; that measured 36ms per published chunk (the single
+            // largest main-thread cost). A freshly generated chunk has no observers, its light
+            // is computed once by checkLight() during publish, and generateSkylightMap()
+            // recalculates the heightmap - so none of that per-block work is needed.
+            net.minecraft.world.chunk.storage.ExtendedBlockStorage[] sections = chunk.getBlockStorageArray();
             for (StagedBlock staged : blocksToPlace) {
                 BlockPos pos = staged.getPos();
-                IBlockState oldState = chunk.getBlockState(pos);
-                IBlockState result = chunk.setBlockState(pos, staged.state);
-
-                if (result != null) {
-                    count++;
-                    totalBlocksFlushed.incrementAndGet();
-
-                    if (staged.tileEntityNbt != null) {
-                        TileEntity te = world.getTileEntity(pos);
-                        if (te != null) {
-                            te.readFromNBT(staged.tileEntityNbt);
-                            te.markDirty();
-                        }
-                    }
-
-                    world.markAndNotifyBlock(pos, chunk, oldState, staged.state, 18);
+                int y = pos.getY();
+                if (y < 0 || y >= 256) {
+                    continue;
                 }
+                int sectionIndex = y >> 4;
+                IBlockState state = staged.state;
+                net.minecraft.world.chunk.storage.ExtendedBlockStorage section = sections[sectionIndex];
+                if (section == null) {
+                    if (state.getBlock() == net.minecraft.init.Blocks.AIR) {
+                        continue;
+                    }
+                    section = new net.minecraft.world.chunk.storage.ExtendedBlockStorage(sectionIndex << 4, !world.provider.isNether());
+                    sections[sectionIndex] = section;
+                }
+                section.set(pos.getX() & 15, y & 15, pos.getZ() & 15, state);
+                count++;
+                totalBlocksFlushed.incrementAndGet();
+
+                if (staged.tileEntityNbt != null) {
+                    TileEntity te = chunk.getTileEntity(pos, net.minecraft.world.chunk.Chunk.EnumCreateEntityType.IMMEDIATE);
+                    if (te != null) {
+                        te.readFromNBT(staged.tileEntityNbt);
+                        te.markDirty();
+                    }
+                }
+            }
+            if (count > 0) {
+                chunk.markDirty();
             }
         } finally {
             world.captureBlockSnapshots = oldCapture;
         }
+        return count;
+    }
 
+    public int flushChunk(WorldServer world, Chunk chunk) {
+        int dim = world.provider.getDimension();
+        ChunkPos chunkPos = chunk.getPos();
+        int count = flushChunkBlocksOnly(world, chunk);
         // Flush staged ticks for this chunk
         Map<ChunkPos, List<StagedTick>> tickDimMap = this.stagedTicks.get(dim);
         if (tickDimMap != null) {

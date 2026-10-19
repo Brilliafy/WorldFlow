@@ -271,7 +271,9 @@ public class GenerationWorkerPool {
         int target = Math.max(1, count);
         // Features dominate the per-chunk cost (structure plotting + decoration), so give them
         // ~2/3 of the budget: base/feat = 1/1, 1/3, 2/5 for 2, 4, 7 threads.
-        int base = Math.max(1, target / 2);
+        // Decoration (features) dominates per-chunk cost, especially in structure-dense areas,
+        // so bias the split to 1/3 base, 2/3 features.
+        int base = Math.max(1, target / 3);
         int feat = Math.max(1, target - base);
         // Pin the split: benchmarks and manual resizes must be deterministic, so the
         // autoscaler stands down until enableAutoscale() is called again.
