@@ -112,12 +112,22 @@ public abstract class ObjectSpawnerMixin {
             target = "Lcom/pg85/otg/customobjects/structures/CustomStructureCache;spawnBo4Chunk(Lcom/pg85/otg/util/ChunkCoordinate;Lcom/pg85/otg/util/ChunkCoordinate;)V"),
             remap = false)
     private void worldflow$lockedSpawnBo4(CustomStructureCache cache, ChunkCoordinate coord, ChunkCoordinate pop) {
+        com.cleanroommc.worldflow.pipeline.otg.WorldFlowStructureCacheAccess acc =
+                (com.cleanroommc.worldflow.pipeline.otg.WorldFlowStructureCacheAccess) cache;
+        com.cleanroommc.worldflow.mixin.otg.CustomStructurePlotterAccessor inv =
+                (com.cleanroommc.worldflow.mixin.otg.CustomStructurePlotterAccessor) acc.worldflow$plotter();
+        com.pg85.otg.customobjects.structures.bo4.BO4CustomStructure structure;
         java.util.concurrent.locks.ReentrantLock lock = OTGStructureService.STRUCTURE_CACHE_LOCK;
         lock.lock();
         try {
-            cache.spawnBo4Chunk(coord, pop);
+            structure = inv.worldflow$getFromCache(coord);
+            inv.worldflow$removeFromCache(coord);
+            inv.worldflow$setOccupied(coord);
         } finally {
             lock.unlock();
+        }
+        if (structure != null && structure.start != null) {
+            structure.spawnInChunk(coord, acc.worldflow$world(), pop);
         }
     }
 

@@ -23,7 +23,9 @@
     "CustomObjectGenMixin",
     "ForgeWorldBiomeCacheMixin",
     "ResourceLockMixin",
-    "TreeGenStateMixin"
+    "TreeGenStateMixin",
+    "CustomStructureCacheAccessMixin",
+    "CustomStructurePlotterAccessor"
   ],
   "server": [],
   "client": []
