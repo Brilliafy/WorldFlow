@@ -19,6 +19,7 @@ public class ChunkEventHandler {
             return;
         }
         WorldServer worldServer = (WorldServer) event.getWorld();
+        com.cleanroommc.worldflow.pipeline.otg.OTGStructureService.resetPlotted();
         WorkerGeneratorContext.fireInitNoiseGensEvent(worldServer, null);
     }
 

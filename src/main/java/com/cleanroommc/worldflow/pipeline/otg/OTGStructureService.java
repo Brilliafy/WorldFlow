@@ -21,8 +21,8 @@ public class OTGStructureService {
     public static final String THREAD_NAME = "WorldFlow-Structures";
 
     /** Plots take the write lock; BO4 spawns take the read lock (parallel readers). */
-    public static final java.util.concurrent.locks.ReentrantReadWriteLock STRUCTURE_CACHE_LOCK =
-            new java.util.concurrent.locks.ReentrantReadWriteLock();
+    public static final java.util.concurrent.locks.ReentrantLock STRUCTURE_CACHE_LOCK =
+            new java.util.concurrent.locks.ReentrantLock();
 
     /** Wall time spent waiting for the structure executor (contention indicator). */
     public static final java.util.concurrent.atomic.AtomicLong TOTAL_WAIT_NANOS = new java.util.concurrent.atomic.AtomicLong();
@@ -61,6 +61,22 @@ public class OTGStructureService {
      */
     private static final ThreadLocal<java.util.Set<Long>> BATCH_DONE = ThreadLocal.withInitial(java.util.HashSet::new);
 
+    /** Coords already plotted, per structure cache. Only touched on the structure thread
+     *  (plus a synchronized reset on world load), so the plotter's cache state is the
+     *  single source of truth and skipping a hit consumes no RNG. */
+    private static final java.util.Map<CustomStructureCache, java.util.Set<Long>> PLOTTED =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    private static java.util.Set<Long> plottedSet(CustomStructureCache cache) {
+        synchronized (PLOTTED) {
+            return PLOTTED.computeIfAbsent(cache, c -> java.util.concurrent.ConcurrentHashMap.newKeySet());
+        }
+    }
+
+    public static void resetPlotted() {
+        PLOTTED.clear();
+    }
+
     public static void clearBatch() {
         BATCH_DONE.remove();
     }
@@ -91,11 +107,17 @@ public class OTGStructureService {
         long submitNanos = System.nanoTime();
         java.util.concurrent.Future<?> future = STRUCTURE_EXECUTOR.submit(() -> {
             long workStart = System.nanoTime();
-            STRUCTURE_CACHE_LOCK.writeLock().lock();
+            STRUCTURE_CACHE_LOCK.lock();
             try {
-                for (ChunkCoordinate c : coords) cache.plotBo4Structures(rand, c);
+                java.util.Set<Long> plotted = plottedSet(cache);
+                for (ChunkCoordinate c : coords) {
+                    long k = net.minecraft.util.math.ChunkPos.asLong(c.getChunkX(), c.getChunkZ());
+                    if (plotted.contains(k)) continue;
+                    cache.plotBo4Structures(rand, c);
+                    plotted.add(k);
+                }
             } finally {
-                STRUCTURE_CACHE_LOCK.writeLock().unlock();
+                STRUCTURE_CACHE_LOCK.unlock();
                 TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);
             }
         });
@@ -138,14 +160,18 @@ public class OTGStructureService {
             future = own;
             STRUCTURE_EXECUTOR.submit(() -> {
                 long workStart = System.nanoTime();
-                STRUCTURE_CACHE_LOCK.writeLock().lock();
+                STRUCTURE_CACHE_LOCK.lock();
                 try {
-                    cache.plotBo4Structures(rand, chunkCoord);
+                    java.util.Set<Long> plotted = plottedSet(cache);
+                    if (!plotted.contains(key)) {
+                        cache.plotBo4Structures(rand, chunkCoord);
+                        plotted.add(key);
+                    }
                     own.complete(null);
                 } catch (Throwable t) {
                     own.completeExceptionally(t);
                 } finally {
-                    STRUCTURE_CACHE_LOCK.writeLock().unlock();
+                    STRUCTURE_CACHE_LOCK.unlock();
                     TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);
                     IN_FLIGHT_PLOTS.remove(key, own);
                 }

@@ -22,7 +22,8 @@
     "ForgeWorldMaterialMixin",
     "CustomObjectGenMixin",
     "ForgeWorldBiomeCacheMixin",
-    "ResourceLockMixin"
+    "ResourceLockMixin",
+    "TreeGenStateMixin"
   ],
   "server": [],
   "client": []

@@ -66,11 +66,21 @@ public abstract class ObjectSpawnerMixin {
             target = "Lcom/pg85/otg/generator/resource/Resource;process(Lcom/pg85/otg/common/LocalWorld;Ljava/util/Random;ZLcom/pg85/otg/util/ChunkCoordinate;)V"),
             remap = false)
     private void worldflow$lockedProcessBefore(Resource resource, LocalWorld world, Random random, boolean village, ChunkCoordinate coord) {
+        if (resource instanceof com.cleanroommc.worldflow.pipeline.otg.WorldFlowTreeState
+                && ((com.cleanroommc.worldflow.pipeline.otg.WorldFlowTreeState) resource).worldflow$ready()) {
+            resource.process(world, random, village, coord);
+            return;
+        }
         ReentrantLock lock = ((WorldFlowLockable) resource).worldflow$lock();
         lock.lock();
+        boolean ok = false;
         try {
             resource.process(world, random, village, coord);
+            ok = true;
         } finally {
+            if (ok && resource instanceof com.cleanroommc.worldflow.pipeline.otg.WorldFlowTreeState) {
+                ((com.cleanroommc.worldflow.pipeline.otg.WorldFlowTreeState) resource).worldflow$markReady();
+            }
             lock.unlock();
         }
     }
@@ -79,11 +89,21 @@ public abstract class ObjectSpawnerMixin {
             target = "Lcom/pg85/otg/generator/resource/Resource;process(Lcom/pg85/otg/common/LocalWorld;Ljava/util/Random;ZLcom/pg85/otg/util/ChunkCoordinate;)V"),
             remap = false)
     private void worldflow$lockedProcessAfter(Resource resource, LocalWorld world, Random random, boolean village, ChunkCoordinate coord) {
+        if (resource instanceof com.cleanroommc.worldflow.pipeline.otg.WorldFlowTreeState
+                && ((com.cleanroommc.worldflow.pipeline.otg.WorldFlowTreeState) resource).worldflow$ready()) {
+            resource.process(world, random, village, coord);
+            return;
+        }
         ReentrantLock lock = ((WorldFlowLockable) resource).worldflow$lock();
         lock.lock();
+        boolean ok = false;
         try {
             resource.process(world, random, village, coord);
+            ok = true;
         } finally {
+            if (ok && resource instanceof com.cleanroommc.worldflow.pipeline.otg.WorldFlowTreeState) {
+                ((com.cleanroommc.worldflow.pipeline.otg.WorldFlowTreeState) resource).worldflow$markReady();
+            }
             lock.unlock();
         }
     }
@@ -92,7 +112,7 @@ public abstract class ObjectSpawnerMixin {
             target = "Lcom/pg85/otg/customobjects/structures/CustomStructureCache;spawnBo4Chunk(Lcom/pg85/otg/util/ChunkCoordinate;Lcom/pg85/otg/util/ChunkCoordinate;)V"),
             remap = false)
     private void worldflow$lockedSpawnBo4(CustomStructureCache cache, ChunkCoordinate coord, ChunkCoordinate pop) {
-        java.util.concurrent.locks.Lock lock = OTGStructureService.STRUCTURE_CACHE_LOCK.readLock();
+        java.util.concurrent.locks.ReentrantLock lock = OTGStructureService.STRUCTURE_CACHE_LOCK;
         lock.lock();
         try {
             cache.spawnBo4Chunk(coord, pop);
