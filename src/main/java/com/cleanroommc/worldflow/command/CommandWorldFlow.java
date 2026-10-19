@@ -400,7 +400,16 @@ public class CommandWorldFlow extends CommandBase {
                 return;
             }
         }
-        com.cleanroommc.worldflow.debug.BenchmarkRunner.executeBenchmark(server, world, cx, cz, radius, workers, sender);
+        int baseThreads = 0;
+        if (args.length >= 5) {
+            try {
+                baseThreads = Math.max(0, Integer.parseInt(args[4]));
+            } catch (NumberFormatException e) {
+                sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid base thread count: " + args[4]));
+                return;
+            }
+        }
+        com.cleanroommc.worldflow.debug.BenchmarkRunner.executeBenchmark(server, world, cx, cz, radius, workers, baseThreads, sender);
     }
 
     @Override

@@ -286,6 +286,21 @@ public class GenerationWorkerPool {
                 base, feat);
     }
 
+    /** Explicit base/feature split for benchmarking; pins the autoscaler. */
+    public synchronized void setWorkerSplit(int base, int features) {
+        if (!this.initialized) {
+            init();
+        }
+        int b = Math.max(1, base);
+        int f = Math.max(1, features);
+        this.autoscaleEnabled = false;
+        this.manualSplitBase = b;
+        this.manualSplitFeatures = f;
+        resizePool(this.baseGenPool, b);
+        resizePool(this.featuresPool, f);
+        WorldFlow.LOGGER.info("[WorldFlow] Worker split set to {} BaseGen / {} Features (manual).", b, f);
+    }
+
     /** Total workers the autoscaler is allowed to use. */
     public int getWorkerCap() {
         return getMaxTotalWorkers();

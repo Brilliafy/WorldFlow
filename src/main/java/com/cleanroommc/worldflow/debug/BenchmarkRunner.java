@@ -28,7 +28,7 @@ public class BenchmarkRunner {
 
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
 
-    public static void executeBenchmark(MinecraftServer server, WorldServer world, int centerX, int centerZ, int radius, int workers, ICommandSender sender) {
+    public static void executeBenchmark(MinecraftServer server, WorldServer world, int centerX, int centerZ, int radius, int workers, int baseThreads, ICommandSender sender) {
         if (!RUNNING.compareAndSet(false, true)) {
             send(server, sender, TextFormatting.RED + "[WorldFlow Bench] A benchmark is already running! Please wait for it to complete.");
             return;
@@ -36,6 +36,9 @@ public class BenchmarkRunner {
 
         if (workers > 0) {
             GenerationWorkerPool.getInstance().setWorkerThreads(workers);
+        }
+        if (baseThreads > 0 && workers > baseThreads) {
+            GenerationWorkerPool.getInstance().setWorkerSplit(baseThreads, workers - baseThreads);
         }
         int effectiveWorkers = GenerationWorkerPool.getInstance().getBaseGenWorkerCount()
                 + GenerationWorkerPool.getInstance().getFeaturesWorkerCount();
