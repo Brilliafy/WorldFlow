@@ -184,7 +184,11 @@ public class ProtoChunk {
                 if (chunk == null) {
                     return false;
                 }
-                return chunk.setBlockState(pos, state) != null;
+                IBlockState oldState = chunk.setBlockState(pos, state);
+                if (oldState != null) {
+                    updateTileEntity(chunk, pos, oldState, state);
+                }
+                return oldState != null;
             } finally {
                 this.chunkLock.unlock();
             }
@@ -249,7 +253,28 @@ public class ProtoChunk {
         }
     }
 
-    @Nullable
+    /**
+     * Emulates the tile-entity side of {@code World.setBlockState} on the private proto
+     * chunk. Vanilla {@code Chunk.setBlockState} only swaps the block state; without
+     * this, generators that place a chest and immediately call {@code world.getTileEntity}
+     * (Roguelike Dungeons loot tables) get null and throw.
+     */
+    private void updateTileEntity(Chunk chunk, BlockPos pos, IBlockState oldState, IBlockState newState) {
+        boolean hadTe = oldState.getBlock().hasTileEntity(oldState);
+        boolean hasTe = newState.getBlock().hasTileEntity(newState);
+        if (hadTe && (!hasTe || oldState.getBlock() != newState.getBlock())) {
+            chunk.removeTileEntity(pos);
+        }
+        if (hasTe && (!hadTe || oldState.getBlock() != newState.getBlock())) {
+            TileEntity tileEntity = newState.getBlock().createTileEntity(this.world, newState);
+            if (tileEntity != null) {
+                tileEntity.setWorld(this.world);
+                tileEntity.setPos(pos);
+                chunk.addTileEntity(pos, tileEntity);
+            }
+        }
+    }
+
     public TileEntity getTileEntity(BlockPos pos) {
         boolean acquired = false;
         try {
