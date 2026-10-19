@@ -79,9 +79,150 @@ public class CommandWorldFlow extends CommandBase {
             case "benchmark":
                 executeBench(server, sender, rest);
                 return;
+            case "hashchunk":
+                executeHashChunk(sender, rest);
+                return;
             default:
                 sender.sendMessage(new TextComponentString(TextFormatting.RED + "Usage: " + getUsage(sender)));
         }
+    }
+
+    /**
+     * Canonical SHA-256 of a fully generated chunk: all block states, biomes,
+     * heightmap and tile entities. Used to prove decoration determinism between two
+     * independent generations of the same seed/area.
+     */
+    private void executeHashChunk(ICommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "Usage: /worldflow hashchunk <chunkX> <chunkZ>"));
+            return;
+        }
+        int x;
+        int z;
+        try {
+            x = Integer.parseInt(args[0]);
+            z = Integer.parseInt(args[1]);
+        } catch (NumberFormatException e) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "Invalid chunk coordinates."));
+            return;
+        }
+        if (!(sender.getEntityWorld() instanceof WorldServer)) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "Not a server world."));
+            return;
+        }
+        WorldServer world = (WorldServer) sender.getEntityWorld();
+        if (args.length >= 3 && "terrain".equalsIgnoreCase(args[2])) {
+            try {
+                net.minecraft.util.math.ChunkPos pos = new net.minecraft.util.math.ChunkPos(x, z);
+                com.cleanroommc.worldflow.pipeline.ProtoChunk proto =
+                        new com.cleanroommc.worldflow.pipeline.ProtoChunk(world, x, z);
+                com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.enter(world, pos, proto, "HashTerrain");
+                try {
+                    net.minecraft.world.gen.IChunkGenerator gen =
+                            com.cleanroommc.worldflow.pipeline.isolation.WorkerGeneratorContext.get().getChunkGenerator(world);
+                    if (gen != null && gen.getClass().getName().startsWith("com.pg85.otg.")) {
+                        try {
+                            ((com.pg85.otg.forge.generator.OTGChunkGenerator) gen).clearChunkCache();
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                    Chunk generated = gen.generateChunk(x, z);
+                    sender.sendMessage(new TextComponentString(TextFormatting.GREEN + "TERRAIN " + x + " " + z + " " + hashTerrain(generated)));
+                } finally {
+                    com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.exit();
+                }
+            } catch (Throwable t) {
+                sender.sendMessage(new TextComponentString(TextFormatting.RED + "terrain hash failed: " + t));
+            }
+            return;
+        }
+        try {
+            Chunk chunk = world.getChunkProvider().provideChunk(x, z);
+            String hash = hashChunk(chunk);
+            sender.sendMessage(new TextComponentString(TextFormatting.GREEN + "HASH " + x + " " + z + " " + hash));
+        } catch (Throwable t) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "hashchunk failed: " + t));
+        }
+    }
+
+    private static String hashChunk(Chunk chunk) throws Exception {
+        java.security.MessageDigest blocks = java.security.MessageDigest.getInstance("SHA-256");
+        java.security.MessageDigest biomes = java.security.MessageDigest.getInstance("SHA-256");
+        java.security.MessageDigest height = java.security.MessageDigest.getInstance("SHA-256");
+        java.security.MessageDigest tes = java.security.MessageDigest.getInstance("SHA-256");
+        net.minecraft.world.chunk.storage.ExtendedBlockStorage[] sections = chunk.getBlockStorageArray();
+        for (net.minecraft.world.chunk.storage.ExtendedBlockStorage ebs : sections) {
+            if (ebs == null) {
+                blocks.update((byte) 0);
+                continue;
+            }
+            blocks.update((byte) 1);
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        // Canonical textual state: immune to registry state-id ordering.
+                        blocks.update(ebs.get(x, y, z).toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        blocks.update((byte) 0);
+                    }
+                }
+            }
+        }
+        biomes.update(chunk.getBiomeArray());
+        for (int h : chunk.getHeightMap()) {
+            height.update((byte) (h >>> 24));
+            height.update((byte) (h >>> 16));
+            height.update((byte) (h >>> 8));
+            height.update((byte) h);
+        }
+        java.util.List<net.minecraft.tileentity.TileEntity> tileEntities =
+                new java.util.ArrayList<>(chunk.getTileEntityMap().values());
+        tileEntities.sort(java.util.Comparator.comparingLong(te ->
+                te.getPos() == null ? 0L : te.getPos().toLong()));
+        for (net.minecraft.tileentity.TileEntity te : tileEntities) {
+            net.minecraft.nbt.NBTTagCompound nbt = new net.minecraft.nbt.NBTTagCompound();
+            te.writeToNBT(nbt);
+            tes.update(nbt.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            tes.update((byte) 0);
+        }
+        return "B:" + hex(blocks.digest()) + " BI:" + hex(biomes.digest())
+                + " HM:" + hex(height.digest()) + " TE:" + hex(tes.digest());
+    }
+
+    private static String hashTerrain(Chunk chunk) throws Exception {
+        java.security.MessageDigest blocks = java.security.MessageDigest.getInstance("SHA-256");
+        java.security.MessageDigest biomes = java.security.MessageDigest.getInstance("SHA-256");
+        java.security.MessageDigest height = java.security.MessageDigest.getInstance("SHA-256");
+        for (net.minecraft.world.chunk.storage.ExtendedBlockStorage ebs : chunk.getBlockStorageArray()) {
+            if (ebs == null) {
+                blocks.update((byte) 0);
+                continue;
+            }
+            blocks.update((byte) 1);
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        blocks.update(ebs.get(x, y, z).toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                        blocks.update((byte) 0);
+                    }
+                }
+            }
+        }
+        biomes.update(chunk.getBiomeArray());
+        for (int h : chunk.getHeightMap()) {
+            height.update((byte) (h >>> 24));
+            height.update((byte) (h >>> 16));
+            height.update((byte) (h >>> 8));
+            height.update((byte) h);
+        }
+        return "B:" + hex(blocks.digest()) + " BI:" + hex(biomes.digest()) + " HM:" + hex(height.digest());
+    }
+
+    private static String hex(byte[] digest) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : digest) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     private void executePipeline(ICommandSender sender, String[] args) {
