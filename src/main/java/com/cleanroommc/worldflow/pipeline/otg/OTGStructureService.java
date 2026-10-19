@@ -30,10 +30,11 @@ public class OTGStructureService {
     public static final java.util.concurrent.atomic.AtomicLong TOTAL_WORK_NANOS = new java.util.concurrent.atomic.AtomicLong();
     public static final java.util.concurrent.atomic.AtomicLong CALL_COUNT = new java.util.concurrent.atomic.AtomicLong();
 
-    private static final ExecutorService STRUCTURE_EXECUTOR = Executors.newSingleThreadExecutor(new ThreadFactory() {
+    private static final java.util.concurrent.atomic.AtomicInteger PLOT_THREAD_ID = new java.util.concurrent.atomic.AtomicInteger(1);
+    private static final ExecutorService STRUCTURE_EXECUTOR = Executors.newFixedThreadPool(4, new ThreadFactory() {
         @Override
         public Thread newThread(Runnable r) {
-            Thread t = new Thread(r, THREAD_NAME);
+            Thread t = new Thread(r, THREAD_NAME + "-" + PLOT_THREAD_ID.getAndIncrement());
             t.setDaemon(true);
             t.setPriority(Thread.NORM_PRIORITY + 1);
             return t;
@@ -41,7 +42,7 @@ public class OTGStructureService {
     });
 
     public static boolean isStructureThread() {
-        return THREAD_NAME.equals(Thread.currentThread().getName());
+        return Thread.currentThread().getName().startsWith(THREAD_NAME);
     }
 
     /**
@@ -107,7 +108,6 @@ public class OTGStructureService {
         long submitNanos = System.nanoTime();
         java.util.concurrent.Future<?> future = STRUCTURE_EXECUTOR.submit(() -> {
             long workStart = System.nanoTime();
-            STRUCTURE_CACHE_LOCK.lock();
             try {
                 java.util.Set<Long> plotted = plottedSet(cache);
                 for (ChunkCoordinate c : coords) {
@@ -117,7 +117,6 @@ public class OTGStructureService {
                     plotted.add(k);
                 }
             } finally {
-                STRUCTURE_CACHE_LOCK.unlock();
                 TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);
             }
         });
@@ -160,7 +159,6 @@ public class OTGStructureService {
             future = own;
             STRUCTURE_EXECUTOR.submit(() -> {
                 long workStart = System.nanoTime();
-                STRUCTURE_CACHE_LOCK.lock();
                 try {
                     java.util.Set<Long> plotted = plottedSet(cache);
                     if (!plotted.contains(key)) {
@@ -171,7 +169,6 @@ public class OTGStructureService {
                 } catch (Throwable t) {
                     own.completeExceptionally(t);
                 } finally {
-                    STRUCTURE_CACHE_LOCK.unlock();
                     TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);
                     IN_FLIGHT_PLOTS.remove(key, own);
                 }
@@ -182,8 +179,6 @@ public class OTGStructureService {
         CALL_COUNT.incrementAndGet();
 
         try {
-            // Bounded wait: plotting is idempotent and re-entrant calls can otherwise park a
-            // worker forever on its own queued task (observed as In-Flight: 96 / Rate: 0).
             future.get(10, java.util.concurrent.TimeUnit.SECONDS);
         } catch (java.util.concurrent.TimeoutException te) {
             WorldFlow.LOGGER.warn("[WorldFlow] Structure plot for chunk {} timed out; continuing (plot is idempotent)", chunkCoord);
@@ -192,9 +187,7 @@ public class OTGStructureService {
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
             WorldFlow.LOGGER.error("[WorldFlow] Error plotting structures for chunk {}", chunkCoord, cause);
-            if (cause instanceof RuntimeException) {
-                throw (RuntimeException) cause;
-            }
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
             throw new RuntimeException(cause);
         } finally {
             TOTAL_WAIT_NANOS.addAndGet(System.nanoTime() - submitNanos);

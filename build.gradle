@@ -397,3 +397,15 @@ tasks.named('build').configure {
     dependsOn 'verifyNoSyntheticMixinConstructors'
 }
 
+sourceSets {
+    otgpatch {
+        java.srcDir 'src/otgpatch/java'
+        compileClasspath += sourceSets.main.compileClasspath
+    }
+}
+
+task otgPatchJar(type: Jar, dependsOn: 'otgpatchClasses') {
+    from sourceSets.otgpatch.output
+    archiveFileName = 'worldflow-otgpatch.jar'
+    destinationDirectory = file('build/libs')
+}
