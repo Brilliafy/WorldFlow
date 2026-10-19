@@ -401,6 +401,7 @@ sourceSets {
     otgpatch {
         java.srcDir 'src/otgpatch/java'
         compileClasspath += sourceSets.main.compileClasspath
+        compileClasspath += sourceSets.main.output
     }
 }
 
