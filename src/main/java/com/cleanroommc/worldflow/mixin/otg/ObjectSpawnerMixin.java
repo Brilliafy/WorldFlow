@@ -2,18 +2,41 @@ package com.cleanroommc.worldflow.mixin.otg;
 
 import com.pg85.otg.configuration.biome.BiomeConfig;
 import com.pg85.otg.common.LocalBiome;
+import com.pg85.otg.common.LocalWorld;
 import com.pg85.otg.generator.ObjectSpawner;
 import com.pg85.otg.util.ChunkCoordinate;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+import java.util.Random;
 
 
 /** Phase timings for OTG population, surfaced in WorldFlow metrics. */
 @Mixin(value = ObjectSpawner.class, remap = false)
 public abstract class ObjectSpawnerMixin {
+
+    /**
+     * OTG shares its vanilla MapGenStructure instances between the terrain pass and
+     * population. Both iterate/mutate plain fastutil maps, so population-time structure
+     * placement has to take the same world-gen lock as the terrain hook.
+     */
+    @Redirect(
+            method = "doPopulate",
+            at = @At(value = "INVOKE",
+                    target = "Lcom/pg85/otg/common/LocalWorld;placeDefaultStructures(Ljava/util/Random;Lcom/pg85/otg/util/ChunkCoordinate;)Z"),
+            remap = false)
+    private boolean worldflow$lockedPlaceDefaultStructures(LocalWorld world, Random rand, ChunkCoordinate chunkCoord) {
+        com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
+        try {
+            return world.placeDefaultStructures(rand, chunkCoord);
+        } finally {
+            com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
+        }
+    }
 
     private static void start(int i) { com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.start(i); }
 

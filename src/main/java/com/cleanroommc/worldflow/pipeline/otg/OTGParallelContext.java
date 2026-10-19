@@ -21,14 +21,19 @@ import java.lang.reflect.Method;
  */
 public class OTGParallelContext {
 
-    public static final int NUM_SHARDS = 64;
-    private static final java.util.concurrent.locks.ReentrantLock[] SHARDED_LOCKS = new java.util.concurrent.locks.ReentrantLock[NUM_SHARDS];
-
-    static {
-        for (int i = 0; i < NUM_SHARDS; i++) {
-            SHARDED_LOCKS[i] = new java.util.concurrent.locks.ReentrantLock();
-        }
-    }
+    /**
+     * OTG's {@code ObjectSpawner} is a single shared instance per world and is not
+     * thread-safe: it holds the population {@code Random}, cascade flags, biome
+     * population caches and BO4 structure cache. Running two {@code populate()} calls
+     * concurrently therefore corrupts structure state and decoration (observed as
+     * {@code ConcurrentModificationException} in {@code CustomObjectGen} and as
+     * non-deterministic decoration). One global lock is required; the old 64-way
+     * sharding only protected the plotter against itself.
+     */
+    public static final int NUM_SHARDS = 1;
+    private static final java.util.concurrent.locks.ReentrantLock[] SHARDED_LOCKS = new java.util.concurrent.locks.ReentrantLock[] {
+            new java.util.concurrent.locks.ReentrantLock(true)
+    };
 
     public static final java.util.concurrent.locks.ReentrantLock OTG_STRUCTURE_LOCK = SHARDED_LOCKS[0];
 

@@ -74,6 +74,7 @@ public class BenchmarkRunner {
                 // Independent Watchdog Thread: started BEFORE submission loop so stalls during submission are caught
                 Thread watchdogThread = new Thread(() -> {
                     long stallStartTimeMs = -1L;
+                    long lastProgressMs = System.currentTimeMillis();
                     int lastCompletedCount = 0;
 
                     while (!finished.get() && RUNNING.get()) {
@@ -96,7 +97,39 @@ public class BenchmarkRunner {
 
                         if (completed > lastCompletedCount) {
                             lastCompletedCount = completed;
+                            lastProgressMs = now;
                             stallStartTimeMs = -1L;
+                        }
+
+                        // Self-heal: if no completion progress for 10s, re-request every bench
+                        // chunk whose future is not done and which is neither in flight nor
+                        // queued. Such a chunk has an orphaned future (its holder was removed
+                        // without completion) and would otherwise idle until the 3x timeout.
+                        if (!finished.get() && now - lastProgressMs >= 10_000L && completed < totalChunks) {
+                            int retried = 0;
+                            for (BenchChunkEntry entry : entries) {
+                                if (entry.future.isDone()) {
+                                    continue;
+                                }
+                                long key = net.minecraft.util.math.ChunkPos.asLong(entry.x, entry.z);
+                                if (GenerationScheduler.getInstance().getInFlight(key) != null
+                                        || GenerationScheduler.getInstance().getPendingRequest(key) != null) {
+                                    continue;
+                                }
+                                try {
+                                    CompletableFuture<Chunk> retry = GenerationScheduler.getInstance().requestChunk(
+                                            world, entry.x, entry.z, ChunkStatus.FULL, GenerationPriority.IMMEDIATE);
+                                    if (retry != null) {
+                                        entry.future = retry;
+                                        retried++;
+                                    }
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                            if (retried > 0) {
+                                WorldFlow.LOGGER.warn("[WorldFlow StallDetector] Self-heal: re-requested {} orphaned bench chunks", retried);
+                            }
+                            lastProgressMs = now;
                         }
 
                         int inFlightCount = GenerationScheduler.getInstance().getInFlightCount();
@@ -432,7 +465,7 @@ public class BenchmarkRunner {
     private static class BenchChunkEntry {
         final int x;
         final int z;
-        final CompletableFuture<Chunk> future;
+        volatile CompletableFuture<Chunk> future;
 
         BenchChunkEntry(int x, int z, CompletableFuture<Chunk> future) {
             this.x = x;

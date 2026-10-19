@@ -275,6 +275,19 @@ public class ChunkDumper {
                     Chunk pipeChunk = null;
 
                     try {
+                        // OTG terrain generation reads neighbour chunks (carvers, smoothing,
+                        // biome borders). If those are unloaded the regenerated chunk differs
+                        // for reasons unrelated to the pipeline. Force a consistent 5x5
+                        // neighbourhood before both reference generations.
+                        for (int ndx = -2; ndx <= 2; ndx++) {
+                            for (int ndz = -2; ndz <= 2; ndz++) {
+                                try {
+                                    world.getChunkProvider().provideChunk(x + ndx, z + ndz);
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                        }
+
                         // Reset caches to prevent stale cross-chunk contamination
                         net.minecraft.world.gen.layer.IntCache.resetIntCache();
                         net.minecraft.world.gen.IChunkGenerator mainGen = world.getChunkProvider().chunkGenerator;

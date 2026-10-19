@@ -197,7 +197,11 @@ public class GenerationScheduler {
                 holder.getPos().x, holder.getPos().z, holder.getCurrentStatus(), holder.getLastWorkerName()
         ));
         if (holder.getCurrentStatus() == ChunkStatus.EMPTY) {
-            GenerationWorkerPool.getInstance().executeBaseGen(holder, () -> executeBaseGeneration(holder));
+            // Must claim the scheduled flag, otherwise the pump sees EMPTY with the flag
+            // clear and queues a second base-gen for the same chunk.
+            if (holder.markBaseGenScheduled()) {
+                GenerationWorkerPool.getInstance().executeBaseGen(holder, () -> executeBaseGeneration(holder));
+            }
             return;
         }
 
@@ -458,9 +462,13 @@ public class GenerationScheduler {
         // 4. Was it queued in pendingRequests? Promote it immediately!
         StatusHolder pending = this.pendingRequests.remove(key);
         if (pending != null) {
-            this.inFlight.put(key, pending);
-            registerPendingWriters(pending);
-            advanceChunk(pending);
+            StatusHolder prev = this.inFlight.putIfAbsent(key, pending);
+            if (prev != null && prev != pending) {
+                chainFutures(prev, pending);
+            } else {
+                registerPendingWriters(pending);
+                advanceChunk(pending);
+            }
             return pending.getCarversFuture();
         }
 
@@ -560,6 +568,10 @@ public class GenerationScheduler {
     }
 
     private void executeBaseGeneration(StatusHolder holder) {
+        executeBaseGeneration(holder, true);
+    }
+
+    private void executeBaseGeneration(StatusHolder holder, boolean retryOnMainThread) {
         WorldServer world = holder.getWorld();
         ChunkPos pos = holder.getPos();
         ProtoChunk proto = holder.getProtoChunk();
@@ -585,10 +597,15 @@ public class GenerationScheduler {
             holder.setCurrentStatus(ChunkStatus.CARVERS);
             holder.getCarversFuture().complete(proto.getChunk());
         } catch (Throwable t) {
-            WorldFlow.LOGGER.warn("[WorldFlow] Off-thread error in base terrain generation for chunk [{}, {}], falling back to main-thread serial", pos.x, pos.z, t);
-            holder.getCarversFuture().complete(proto.getChunk());
-            fallbackToMainThreadSerial(holder);
-            return;
+            if (retryOnMainThread) {
+                // Never publish a partial, undecorated chunk. Re-run terrain generation on
+                // the server thread (where unsafe mod hooks are safe), then continue the
+                // normal feature pipeline from the completed carver stage.
+                WorldFlow.LOGGER.warn("[WorldFlow] Off-thread error in base terrain generation for chunk [{}, {}], retrying on the main thread", pos.x, pos.z, t);
+                retryBaseGenOnMainThread(holder);
+                return;
+            }
+            throw new RuntimeException(t);
         } finally {
             ThreadLocalWorldView.exit();
             this.totalBaseGenNanos.addAndGet(System.nanoTime() - startNanos);
@@ -801,7 +818,7 @@ public class GenerationScheduler {
             holder.setCurrentStatus(ChunkStatus.LIGHT);
             holder.getWorkerDoneFuture().complete(proto.getChunk());
         } catch (Throwable t) {
-            WorldFlow.LOGGER.warn("[WorldFlow] Off-thread error decorating chunk [{}, {}], falling back to main-thread finalize: {}", pos.x, pos.z, t.toString());
+            WorldFlow.LOGGER.warn("[WorldFlow] Off-thread error decorating chunk [{}, {}], falling back to main-thread finalize", pos.x, pos.z, t);
             fallbackToMainThreadSerial(holder);
             return;
         } finally {
@@ -816,6 +833,27 @@ public class GenerationScheduler {
 
         // Complete this writer and publish any chunks whose pending writers have reached 0
         completeWriter(holder);
+    }
+
+    private void retryBaseGenOnMainThread(StatusHolder holder) {
+        WorldServer world = holder.getWorld();
+        ChunkPos pos = holder.getPos();
+        Runnable action = () -> {
+            if (holder.isDone()) {
+                return;
+            }
+            try {
+                executeBaseGeneration(holder, false);
+            } catch (Throwable t) {
+                WorldFlow.LOGGER.error("[WorldFlow] Main-thread base generation retry failed for chunk [{}, {}]", pos.x, pos.z, t);
+                fallbackToMainThreadSerial(holder);
+            }
+        };
+        if (world.isCallingFromMinecraftThread()) {
+            action.run();
+        } else {
+            world.addScheduledTask(action);
+        }
     }
 
     private void fallbackToMainThreadSerial(StatusHolder holder) {
@@ -950,7 +988,14 @@ public class GenerationScheduler {
                 if (acquired) {
                     long genStart = System.nanoTime();
                     try {
-                        generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                        // Shared with OTG's default-structure pass: structure placement and
+                        // structure-map iteration must never overlap across threads.
+                        com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
+                        try {
+                            generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                        } finally {
+                            com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
+                        }
                     } finally {
                         lock.unlock();
                         recordGeneratorTime(generator.getClass().getSimpleName(), System.nanoTime() - genStart);
@@ -971,7 +1016,12 @@ public class GenerationScheduler {
                 recordSerializedGenerator(generator.getClass().getName());
                 try {
                     GenerationWorkerPool.getInstance().submitSerializer(() -> {
-                        generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                        com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
+                        try {
+                            generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                        } finally {
+                            com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
+                        }
                     }).get(10, TimeUnit.SECONDS);
                 } catch (Throwable t) {
                     WorldFlow.LOGGER.warn("[WorldFlow] UNSAFE generator {} timed out or failed in chunk [{}, {}]", generator.getClass().getName(), chunkX, chunkZ, t);
@@ -1241,8 +1291,35 @@ public class GenerationScheduler {
     }
 
     public void removeInFlight(long key) {
-        this.inFlight.remove(key);
+        StatusHolder removed = this.inFlight.remove(key);
+        if (removed != null && !removed.isDone()) {
+            // Every removal path is supposed to complete the holder's futures first.
+            // If one doesn't, callers waiting on getFuture() would hang forever.
+            WorldFlow.LOGGER.warn("[WorldFlow] removeInFlight dropped an incomplete holder [{}, {}] stage={} ownDone={} workerDone={} carversDone={}",
+                    removed.getPos().x, removed.getPos().z, removed.getCurrentStatus(),
+                    removed.isOwnDecorationDone(), removed.isWorkerDone(), removed.getCarversFuture().isDone(),
+                    new Throwable("removeInFlight caller"));
+        }
         drainPendingRequests();
+    }
+
+    /** Complete {@code dropped}'s futures with {@code driver}'s results, so no caller is orphaned. */
+    private static void chainFutures(StatusHolder driver, StatusHolder dropped) {
+        if (driver == null || dropped == null || driver == dropped) {
+            return;
+        }
+        driver.getFuture().whenComplete((c, t) -> {
+            if (t != null) dropped.getFuture().completeExceptionally(t);
+            else dropped.getFuture().complete(c);
+        });
+        driver.getCarversFuture().whenComplete((c, t) -> {
+            if (t != null) dropped.getCarversFuture().completeExceptionally(t);
+            else dropped.getCarversFuture().complete(c);
+        });
+        driver.getWorkerDoneFuture().whenComplete((c, t) -> {
+            if (t != null) dropped.getWorkerDoneFuture().completeExceptionally(t);
+            else dropped.getWorkerDoneFuture().complete(c);
+        });
     }
 
     private void drainPendingRequests() {
@@ -1258,6 +1335,10 @@ public class GenerationScheduler {
             if (prev == null) {
                 registerPendingWriters(holder);
                 advanceChunk(holder);
+            } else if (prev != holder) {
+                // A different holder already drives this chunk; chain so the queued
+                // caller's future still completes instead of being silently dropped.
+                chainFutures(prev, holder);
             }
         }
     }

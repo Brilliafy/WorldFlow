@@ -37,20 +37,47 @@ public class ThreadLocalWorldView {
         public final WorldServer world;
         public final ChunkPos centerPos;
         public final ProtoChunk centerProto;
+        public final long centerKey;
         public final Map<Long, ProtoChunk> neighbourhood = new ConcurrentHashMap<>();
         public final Chunk emptyChunk;
         public final String generatorName;
         private final Map<Long, Chunk> emptyChunks = new ConcurrentHashMap<>();
 
+        // Direct-mapped cache for neighbourhood lookups: avoids boxing a Long key on
+        // every block read (JFR: HashMap.getNode was a top feature-stage frame).
+        private final long[] cacheKeys = new long[8];
+        private final ProtoChunk[] cacheProtos = new ProtoChunk[8];
+
         public GenerationWorkerContext(WorldServer world, ChunkPos centerPos, ProtoChunk centerProto, String generatorName) {
             this.world = world;
             this.centerPos = centerPos;
             this.centerProto = centerProto;
+            this.centerKey = ChunkPos.asLong(centerPos.x, centerPos.z);
             this.generatorName = generatorName;
             this.emptyChunk = new Chunk(world, centerPos.x, centerPos.z);
             if (centerProto != null) {
-                this.neighbourhood.put(ChunkPos.asLong(centerPos.x, centerPos.z), centerProto);
+                this.neighbourhood.put(this.centerKey, centerProto);
             }
+        }
+
+        /** Fast, allocation-free neighbourhood lookup. */
+        public ProtoChunk lookup(long key) {
+            if (key == this.centerKey) {
+                return this.centerProto;
+            }
+            int slot = (int) (key ^ (key >>> 32)) & 7;
+            if (this.cacheKeys[slot] == key) {
+                ProtoChunk cached = this.cacheProtos[slot];
+                if (cached != null) {
+                    return cached;
+                }
+            }
+            ProtoChunk proto = this.neighbourhood.get(key);
+            if (proto != null) {
+                this.cacheKeys[slot] = key;
+                this.cacheProtos[slot] = proto;
+            }
+            return proto;
         }
 
         public Chunk getOrCreateEmptyChunk(int cx, int cz) {
@@ -91,32 +118,37 @@ public class ThreadLocalWorldView {
 
     @Nullable
     public static IBlockState getBlockState(World world, BlockPos pos) {
+        return getBlockState(world, pos.getX(), pos.getY(), pos.getZ());
+    }
+
+    @Nullable
+    public static IBlockState getBlockState(World world, int x, int y, int z) {
         GenerationWorkerContext ctx = CURRENT_CONTEXT.get();
         if (ctx == null) {
             return null; // Not in generating thread context
         }
-        if (pos.getY() < 0 || pos.getY() >= 256) {
+        if (y < 0 || y >= 256) {
             return Blocks.AIR.getDefaultState();
         }
 
-        int chunkX = pos.getX() >> 4;
-        int chunkZ = pos.getZ() >> 4;
+        int chunkX = x >> 4;
+        int chunkZ = z >> 4;
         long key = ChunkPos.asLong(chunkX, chunkZ);
 
-        ProtoChunk proto = ctx.neighbourhood.get(key);
+        ProtoChunk proto = ctx.lookup(key);
         if (proto != null) {
-            return proto.getBlockState(pos);
+            return proto.getBlockStateFast(x, y, z);
         }
 
         ProtoChunk anyProto = GenerationScheduler.getInstance().getProtoChunkAny(key);
         if (anyProto != null) {
-            return anyProto.getBlockState(pos);
+            return anyProto.getBlockStateFast(x, y, z);
         }
 
         // Check if loaded in live world
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
         if (loaded != null) {
-            return loaded.getBlockState(pos);
+            return loaded.getBlockState(x & 15, y, z & 15);
         }
 
         // Unloaded chunk: Return AIR immediately without triggering provideChunk

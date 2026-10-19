@@ -31,14 +31,17 @@ public abstract class WorldMixin {
             at = @At("HEAD"),
             cancellable = true)
     private void worldflow$onGetBlockState(BlockPos pos, CallbackInfoReturnable<IBlockState> cir) {
-        if (!ThreadLocalWorldView.isGenerating()) {
+        if (this.isRemote) {
             return;
         }
-        if (!this.isRemote && ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
-            IBlockState state = ThreadLocalWorldView.getBlockState((World) (Object) this, pos);
-            if (state != null) {
-                cir.setReturnValue(state);
-            }
+        if (ModConfig.CONCURRENCY == null || !ModConfig.CONCURRENCY.enableThreadLocalWorldView) {
+            return;
+        }
+        // Single ThreadLocal lookup: getBlockState itself returns null when no worker
+        // context is active, so the old pre-check doubled the ThreadLocal cost.
+        IBlockState state = ThreadLocalWorldView.getBlockState((World) (Object) this, pos.getX(), pos.getY(), pos.getZ());
+        if (state != null) {
+            cir.setReturnValue(state);
         }
     }
 

@@ -153,8 +153,13 @@ public class CompatRegistry {
             }
         }
 
-        // Default: PARALLEL_SAFE. ThreadLocalWorldView and CascadeBlockBuffer isolate block placements and chunk access.
-        // Known unsafe multi-chunk structure generators are explicitly configured as SERIALIZE or UNSAFE.
-        return GeneratorSafetyLevel.PARALLEL_SAFE;
+        // Safety-first default: any mod world generator that is not explicitly whitelisted
+        // as parallel-safe is serialized. Unknown mods routinely keep shared maps, global
+        // RNG state or cached chunk references that are not thread-safe.
+        boolean serializeUnknown = ModConfig.CONCURRENCY == null
+                || ModConfig.CONCURRENCY.serializeUnknownGenerators;
+        return isWorldGen && serializeUnknown
+                ? GeneratorSafetyLevel.SERIALIZE
+                : GeneratorSafetyLevel.PARALLEL_SAFE;
     }
 }

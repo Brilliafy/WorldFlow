@@ -85,6 +85,11 @@ public class ModConfig {
         @Config.Comment("List of class or package substrings strictly unsafe for off-thread execution (deferred to main tick thread).")
         @Config.Name("Unsafe Generators")
         public String[] unsafeGenerators = new String[] {};
+
+        @Config.Comment("Serialize every IWorldGenerator that is not explicitly whitelisted as parallel-safe. " +
+                "Safety-first default: unknown mods may keep shared maps or global RNG state.")
+        @Config.Name("Serialize Unknown Generators")
+        public boolean serializeUnknownGenerators = true;
     }
 
     public static class Noise {

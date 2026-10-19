@@ -138,28 +138,33 @@ public class ProtoChunk {
     }
 
     public IBlockState getBlockState(BlockPos pos) {
-        if (pos.getY() < 0 || pos.getY() >= 256) {
+        return getBlockStateFast(pos.getX(), pos.getY(), pos.getZ());
+    }
+
+    /**
+     * Allocation-free read path used by the worker world view. Skips the extra
+     * BlockPos-based {@code Chunk.getBlockState} hop, which was the hottest self
+     * frame in the feature stage profile.
+     */
+    public IBlockState getBlockStateFast(int worldX, int y, int worldZ) {
+        if (y < 0 || y >= 256) {
+            return Blocks.AIR.getDefaultState();
+        }
+        Chunk chunk = this.underlyingChunk;
+        if (chunk == null) {
             return Blocks.AIR.getDefaultState();
         }
         if (ownedByCurrentThread()) {
-            Chunk own = this.underlyingChunk;
-            return own != null ? own.getBlockState(pos) : Blocks.AIR.getDefaultState();
+            return chunk.getBlockState(worldX & 15, y, worldZ & 15);
         }
         boolean acquired = this.chunkLock.tryLock();
-        if (acquired) {
-            try {
-                Chunk chunk = this.underlyingChunk;
-                if (chunk == null) {
-                    return Blocks.AIR.getDefaultState();
-                }
-                return chunk.getBlockState(pos);
-            } finally {
+        try {
+            chunk = this.underlyingChunk;
+            return chunk != null ? chunk.getBlockState(worldX & 15, y, worldZ & 15) : Blocks.AIR.getDefaultState();
+        } finally {
+            if (acquired) {
                 this.chunkLock.unlock();
             }
-        } else {
-            // Contention fallback: read directly from volatile underlyingChunk without deadlock
-            Chunk chunk = this.underlyingChunk;
-            return chunk != null ? chunk.getBlockState(pos) : Blocks.AIR.getDefaultState();
         }
     }
 
