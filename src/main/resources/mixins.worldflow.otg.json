@@ -11,6 +11,7 @@
     "ChunkProviderOTGStructuresMixin",
     "ForgeEngineMixin",
     "ForgeWorldMixin",
+    "ForgeWorldNullGuardMixin",
     "OreGenMixin",
     "CustomStructureCacheMixin",
     "CustomStructurePlotterMixin",

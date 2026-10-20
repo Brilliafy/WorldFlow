@@ -334,6 +334,24 @@ public class CascadeBlockBuffer {
         return totalFlushed;
     }
 
+    public long stagedBlockCount() {
+        long count = 0L;
+        for (Map<ChunkPos, List<StagedBlock>> map : this.memoryStaging.values()) {
+            for (List<StagedBlock> list : map.values()) {
+                synchronized (list) { count += list.size(); }
+            }
+        }
+        return count;
+    }
+
+    public long stagedChunkCount() {
+        long count = 0L;
+        for (Map<ChunkPos, List<StagedBlock>> map : this.memoryStaging.values()) {
+            count += map.size();
+        }
+        return count;
+    }
+
     /** Returns the latest staged block state at a position, or null. Used to create missing TEs. */
     @Nullable
     public IBlockState getStagedBlockState(World world, BlockPos pos) {

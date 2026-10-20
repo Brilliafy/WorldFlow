@@ -335,6 +335,12 @@ public class ThreadLocalWorldView {
     }
 
     @Nullable
+    public static WorldServer getCurrentWorld() {
+        GenerationWorkerContext ctx = CURRENT_CONTEXT.get();
+        return ctx != null ? ctx.world : null;
+    }
+
+    @Nullable
     public static TileEntity getTileEntity(World world, BlockPos pos) {
         GenerationWorkerContext ctx = CURRENT_CONTEXT.get();
         if (ctx == null) {

@@ -1,12 +1,12 @@
 # WorldFlow 1.0.0 — release notes and install
 
-WorldFlow 1.0.0 is the first release with the parallel OTG structure plotter.
+WorldFlow 1.0.1 is the stable release. The parallel OTG structure plotter is experimental.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `worldflow-1.0.0.jar` | the mod (parallel pipeline + parallel OTG plotter support) |
+| `worldflow-1.0.1.jar` | the mod (parallel pipeline + parallel OTG plotter support) |
 | `OpenTerrainGenerator-1.12.2-v9.7-original.jar` | untouched OTG 9.7 (use this) |
 | `experimental/OpenTerrainGenerator-...-patched.jar` | 4-thread plotter binary patch (experimental) |
 
@@ -21,7 +21,7 @@ WorldFlow 1.0.0 is the first release with the parallel OTG structure plotter.
 
 1. Stop the server.
 2. Back up the existing `mods/OpenTerrainGenerator-1.12.2-v9.7.jar`.
-3. Copy `worldflow-1.0.0.jar` into `mods/`.
+3. Copy `worldflow-1.0.1.jar` into `mods/`.
 4. Use the **unpatched** `OpenTerrainGenerator-1.12.2-v9.7.jar` (or restore the original from this bundle).
 5. Start the server.
 

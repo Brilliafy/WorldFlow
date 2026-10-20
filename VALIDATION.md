@@ -50,3 +50,25 @@ patched OTG 9.7 jar, Cleanroom 0.6.13, Java 26, ZGC, `-Xms1G -Xmx8G`.
 
 All 3,109 `.mca` files of the real Dregora backup were validated read-only:
 2,639,510 chunks, 544,106 empty slots, **0 bad headers/offsets/compression**.
+
+## v1.0.1 memory follow-up (measured)
+
+- Startup: `/worldflow otgstats` = worldInfo 0 regions, plotter 0 regions; live
+  `jmap -histo:live` has no `LocalMaterialData[]` in the top classes.
+- After a fresh r8 area (289 chunks): worldInfo 8 regions / 80,000 slots / **33
+  unique** structures; plotter 8 regions / 80,000 slots / **7 unique** structures;
+  live `LocalMaterialData[]` **69,505 arrays / 14.5 MB**; heap used 2.59 GB.
+- The long soak's 3.36M `LocalMaterialData[]` / 2.9 GB are the lazily loaded
+  **global BO4/BO3 structure definitions** (`BO3BlockFunction` 485k, NBT tags),
+  not the per-chunk plotter cache. The 8 GB heap was headroom/GC pressure:
+  ~3 GB definitions + 6.6M staged blocks (~260 MB) + chunk/NBT + ZGC churn.
+  12 GB is recommended for a full Dregora world.
+- Staging after the r8: 42,287 blocks / 53 chunks; unloadarea discards the area.
+
+## placeTree NPE
+
+`ForgeWorld.world` is a plain public non-volatile field written by
+`provideWorldInstance`; a worker can read a stale null, then the tree generator
+calls `World.getBlockState` on null. v1.0.1 redirects the field read in `placeTree`
+to the pipeline's `ThreadLocalWorldView` world and logs the event. The true fix is
+a volatile/init barrier on the OTG field.

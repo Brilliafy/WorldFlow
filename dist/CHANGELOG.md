@@ -1,5 +1,34 @@
 # WorldFlow Changelog
 
+## v1.0.1 — 2026-10-20
+
+### placeTree NPE
+- `ForgeWorld.world` is a plain public field written by `provideWorldInstance`.
+  Worker threads can observe a stale null and `placeTree` then calls
+  `World.getBlockState` on null. A GETFIELD redirect now falls back to the
+  pipeline worker's `ThreadLocalWorldView` world and logs the event. The true fix
+  is a volatile/init barrier on that OTG field; the guard removes the NPE and keeps
+  tree writes inside the proto view.
+
+### Diagnostics
+- `/worldflow otgstats` reports worldInfoChunks / plotter cache regions, filled
+  slots, unique structures, frequency maps, staged block/chunk counts and heap.
+
+### Memory investigation (correcting the v1.0.0 note)
+- The parallel plotter's own caches are small: startup 0 regions; after a fresh r8
+  area only 8 regions / 80,000 slots / 33 unique worldInfo structures and 7 unique
+  plotter structures (live `LocalMaterialData[]` 14 MB).
+- The 3 GB of `LocalMaterialData[]` seen in the long soak is the **global BO4/BO3
+  structure definition cache** (BO3BlockFunction 485k, millions of NBT tags/material
+  arrays) loaded lazily when `getObjectByName` is called for the biome structure
+  names. It is not the plotter's per-chunk cache and is not freed.
+- The 8 GB heap was therefore headroom/GC pressure: ~3 GB definitions + staged
+  blocks (6.6M / ~260 MB) + chunks/NBT + ZGC churn. 12 GB is recommended for a full
+  Dregora world; the parallel plotter increases allocation rate but is not leaking
+  the plot cache.
+- Fresh r8 staging measurement: 42,287 staged blocks across 53 chunks; unloadarea
+  discards the area, the remaining frontier is bounded.
+
 ## v1.0.0 — 2026-10-20
 
 ### Parallel OTG plotter (experimental)

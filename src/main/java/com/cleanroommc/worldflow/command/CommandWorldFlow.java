@@ -5,6 +5,10 @@ import com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer;
 import com.cleanroommc.worldflow.config.ModConfig;
 import com.cleanroommc.worldflow.noise.VectorNoiseEngine;
 import com.cleanroommc.worldflow.pregen.PregeneratorEngine;
+import com.pg85.otg.OTG;
+import com.pg85.otg.customobjects.structures.CustomStructure;
+import com.pg85.otg.customobjects.structures.CustomStructureCache;
+import com.pg85.otg.forge.world.ForgeWorld;
 import net.minecraft.command.CommandBase;
 import net.minecraft.command.CommandException;
 import net.minecraft.command.ICommandSender;
@@ -21,7 +25,10 @@ import javax.annotation.Nullable;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.IdentityHashMap;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 public class CommandWorldFlow extends CommandBase {
 
@@ -32,7 +39,7 @@ public class CommandWorldFlow extends CommandBase {
 
     @Override
     public String getUsage(ICommandSender sender) {
-        return "/worldflow <noise|cascade|pregen|pipeline|dumpchunk|diffarea|bench> ...";
+        return "/worldflow <noise|cascade|pregen|pipeline|dumpchunk|diffarea|bench|hashchunk|unloadarea|otgstats> ...";
     }
 
     @Override
@@ -85,9 +92,94 @@ public class CommandWorldFlow extends CommandBase {
             case "unloadarea":
                 executeUnloadArea(sender, rest);
                 return;
+            case "otgstats":
+                executeOtgStats(server, sender);
+                return;
             default:
                 sender.sendMessage(new TextComponentString(TextFormatting.RED + "Usage: " + getUsage(sender)));
         }
+    }
+
+    private void executeOtgStats(MinecraftServer server, ICommandSender sender) {
+        try {
+            net.minecraft.world.World world = server.worlds[0];
+            String name = world.getWorldInfo().getWorldName();
+            Object local = OTG.getWorld(name);
+            if (!(local instanceof ForgeWorld)) {
+                local = OTG.getWorld("overworld");
+            }
+            if (!(local instanceof ForgeWorld)) {
+                sender.sendMessage(new TextComponentString(TextFormatting.RED + "Not an OTG ForgeWorld: " + name));
+                return;
+            }
+            CustomStructureCache cache = ((ForgeWorld) local).getStructureCache();
+            Map<?, ?> worldInfo = (Map<?, ?>) getField(cache, "worldInfoChunks");
+            Set<Object> unique = Collections.newSetFromMap(new IdentityHashMap<>());
+            long slots = 0L, filled = 0L;
+            for (Object regionObj : worldInfo.values()) {
+                CustomStructure[][] arr = (CustomStructure[][]) getField(regionObj, "structures");
+                for (CustomStructure[] row : arr) {
+                    for (CustomStructure structure : row) {
+                        slots++;
+                        if (structure != null) {
+                            filled++;
+                            unique.add(structure);
+                        }
+                    }
+                }
+            }
+            Object plotter = getField(cache, "plotter");
+            Map<?, ?> bo4 = (Map<?, ?>) getField(plotter, "bo4StructureCache");
+            Set<Object> uniqueBo4 = Collections.newSetFromMap(new IdentityHashMap<>());
+            long bo4Slots = 0L, bo4Filled = 0L;
+            for (Object regionObj : bo4.values()) {
+                Object[][] arr = (Object[][]) regionObj;
+                for (Object[] row : arr) {
+                    for (Object structure : row) {
+                        bo4Slots++;
+                        if (structure != null) {
+                            bo4Filled++;
+                            uniqueBo4.add(structure);
+                        }
+                    }
+                }
+            }
+            Map<?, ?> byName = (Map<?, ?>) getField(plotter, "spawnedStructuresByName");
+            long byNameEntries = 0L;
+            for (Object value : byName.values()) byNameEntries += ((java.util.List<?>) value).size();
+            Map<?, ?> byGroup = (Map<?, ?>) getField(plotter, "spawnedStructuresByGroup");
+            long groupEntries = 0L;
+            for (Object value : byGroup.values()) groupEntries += ((Map<?, ?>) value).size();
+            Map<?, ?> plotted = (Map<?, ?>) getField(plotter, "plottedChunks");
+            Map<?, ?> fast = (Map<?, ?>) getField(plotter, "plottedChunksFastCache");
+            long staged = CascadeBlockBuffer.INSTANCE.stagedBlockCount();
+            long stagedChunks = CascadeBlockBuffer.INSTANCE.stagedChunkCount();
+            Runtime rt = Runtime.getRuntime();
+            long heap = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L);
+            sender.sendMessage(new TextComponentString(TextFormatting.GOLD + String.format(
+                    "OTGStats wInfo regions=%d slots=%d filled=%d unique=%d | plotter regions=%d slots=%d filled=%d unique=%d | byName %d keys/%d entries | byGroup %d keys/%d entries | plotted=%d fast=%d | staged %d blocks/%d chunks | heap=%dMB",
+                    worldInfo.size(), slots, filled, unique.size(),
+                    bo4.size(), bo4Slots, bo4Filled, uniqueBo4.size(),
+                    byName.size(), byNameEntries, byGroup.size(), groupEntries,
+                    plotted.size(), fast.size(), staged, stagedChunks, heap)));
+        } catch (Throwable t) {
+            sender.sendMessage(new TextComponentString(TextFormatting.RED + "otgstats failed: " + t));
+            WorldFlow.LOGGER.warn("[WorldFlow] otgstats failed", t);
+        }
+    }
+
+    private static Object getField(Object target, String name) throws Exception {
+        Class<?> type = target.getClass();
+        while (type != null) {
+            try {
+                java.lang.reflect.Field field = type.getDeclaredField(name);
+                field.setAccessible(true);
+                return field.get(target);
+            } catch (NoSuchFieldException e) {
+                type = type.getSuperclass();
+            }
+        }
+        throw new NoSuchFieldException(name + " on " + target.getClass().getName());
     }
 
     private void executeUnloadArea(ICommandSender sender, String[] args) {
