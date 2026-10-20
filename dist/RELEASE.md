@@ -71,8 +71,10 @@ install**. The mod defaults to one plotter thread; the patch is provided under
 - **Terrain determinism:** independent generation runs produce identical biomes,
   heightmaps and base sections for the same seed (81/81 samples on the previous
   release; the terrain path is unchanged).
-- **Decoration determinism:** bit-identical in `worldflow.deterministic` mode;
-  the fast parallel mode is content-complete but decoration order may vary.
+- **Decoration determinism:** two independent deterministic-mode runs at 34,000,000
+  (r8, region files deleted between runs) produced identical block and biome hashes
+  (`B:1ff2039d…`, `BI:86067d5a…`). The fast parallel mode is content-complete but
+  decoration order may vary.
 
 ## Known limitations
 

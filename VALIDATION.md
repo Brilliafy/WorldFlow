@@ -39,9 +39,12 @@ patched OTG 9.7 jar, Cleanroom 0.6.13, Java 26, ZGC, `-Xms1G -Xmx8G`.
 
 - Terrain: bit-identical across independent runs (biomes, heightmap, base sections;
   81/81 samples on the previous release; terrain path unchanged).
-- Decoration: reproducible with `-Dworldflow.deterministic=true` (one base/feature
-  worker and one plot thread). Fast parallel mode is content-complete but decoration
-  order may vary.
+- Decoration: proven with `-Dworldflow.deterministic=true` (one base/feature worker
+  and one plot thread). Two independent r8 runs at 34,000,000 after deleting the
+  region files produced identical block and biome hashes:
+  `B:1ff2039de2ceff2e60b7d99403bf02721b5fa017a7c3bf51249ce967a54dc8df`
+  `BI:86067d5ab4993d2232135a69a96f5e5eb2a83cf70c01f4dedb1c515782207e9d`.
+  Fast parallel mode is content-complete but decoration order may vary.
 
 ## Backup
 
