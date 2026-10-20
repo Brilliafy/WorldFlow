@@ -32,6 +32,16 @@
 - Per-mod generator locks are used for the serialized path, but the world-gen lock
   remains the cross-mod ordering point.
 
+### Save correctness
+- `awaitQuiesce` now honors the save window as well as the quiesce window; external
+  producers (bench/pregen) stay blocked for the whole `WorldServer.saveAll`, not
+  just the drain. Previously the window ended before the save and Recurrent
+  Complex's `WorldStructureGenerationData` could be mutated during iteration.
+- The save drain waits for active/queued base and feature workers, including
+  workers whose holders were dropped by `unloadarea`. This removes the
+  `MapStorage` ConcurrentModificationException during auto-saves.
+- Save window is bounded at 120 s and auto-expires if a save never reports back.
+
 ### Memory / lifecycle
 - The plotter's fast cache is capped at 65,536 entries.
 - `/worldflow unloadarea` discards staged blocks, ticks, entities and tile

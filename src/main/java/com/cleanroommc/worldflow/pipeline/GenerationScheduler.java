@@ -358,7 +358,8 @@ public class GenerationScheduler {
         long cap = System.currentTimeMillis() + 120_000L;
         while (true) {
             long now = System.currentTimeMillis();
-            if (now >= this.quiescingUntilMs.get() || now >= cap) {
+            long until = Math.max(this.quiescingUntilMs.get(), this.saveWindowUntilMs.get());
+            if (now >= until || now >= cap) {
                 return;
             }
             try {
@@ -1514,7 +1515,9 @@ public class GenerationScheduler {
                         }
                     }
                 }
-                if (!hasUnfinished && this.pendingRequestQueue.isEmpty()) {
+                if (!hasUnfinished && this.pendingRequestQueue.isEmpty()
+                        && com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().getActiveWorkerCount() == 0
+                        && com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().getQueueSize() == 0) {
                     break;
                 }
                 try {
@@ -1541,17 +1544,25 @@ public class GenerationScheduler {
             }
         }
 
-        // 2. Drain serializer queue
+        // 2. Wait for workers whose holders were already removed (e.g. unloadarea drops)
+        // so no worker can mutate MapStorage-backed mod data during the save.
+        while (System.currentTimeMillis() < deadline) {
+            GenerationWorkerPool pool = GenerationWorkerPool.getInstance();
+            if (pool.getActiveWorkerCount() == 0 && pool.getQueueSize() == 0) break;
+            try { Thread.sleep(2L); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+        }
+
+        // 3. Drain serializer queue
         try {
             long remaining = Math.max(50, deadline - System.currentTimeMillis());
             GenerationWorkerPool.getInstance().submitSerializer(() -> {}).get(remaining, TimeUnit.MILLISECONDS);
         } catch (Throwable ignored) {
         }
 
-        // 3. Flush all staged blocks for this dimension
+        // 4. Flush all staged blocks for this dimension
         com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer.INSTANCE.flushAll(world);
 
-        // 4. Force emit final generation metrics
+        // 5. Force emit final generation metrics
         forceLogMetrics();
     }
 
