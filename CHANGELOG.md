@@ -32,6 +32,11 @@
 - Per-mod generator locks are used for the serialized path, but the world-gen lock
   remains the cross-mod ordering point.
 
+### Tile entities
+- Block writes to already-loaded chunks now create the TileEntity (`Chunk.setBlockState`
+  bypasses `World.setBlockState`'s TE creation). Same-state proto rewrites also create
+  a missing TE. Fixes the remaining Roguelike `setLootTable` NPE and keeps chest loot.
+
 ### Save correctness
 - `awaitQuiesce` now honors the save window as well as the quiesce window; external
   producers (bench/pregen) stay blocked for the whole `WorldServer.saveAll`, not

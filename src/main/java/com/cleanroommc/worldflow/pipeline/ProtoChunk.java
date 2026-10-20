@@ -281,12 +281,17 @@ public class ProtoChunk {
         if (hadTe && (!hasTe || oldState.getBlock() != newState.getBlock())) {
             chunk.removeTileEntity(pos);
         }
-        if (hasTe && (!hadTe || oldState.getBlock() != newState.getBlock())) {
-            TileEntity tileEntity = newState.getBlock().createTileEntity(this.world, newState);
-            if (tileEntity != null) {
-                tileEntity.setWorld(this.world);
-                tileEntity.setPos(pos);
-                chunk.addTileEntity(pos, tileEntity);
+        if (hasTe) {
+            // Create the TE whenever it is missing, including same-block rewrites
+            // (Chunk.setBlockState does not create TEs itself).
+            TileEntity existing = chunk.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+            if (existing == null) {
+                TileEntity tileEntity = newState.getBlock().createTileEntity(this.world, newState);
+                if (tileEntity != null) {
+                    tileEntity.setWorld(this.world);
+                    tileEntity.setPos(pos);
+                    chunk.addTileEntity(pos, tileEntity);
+                }
             }
         }
     }

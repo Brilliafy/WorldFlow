@@ -181,9 +181,21 @@ public class ThreadLocalWorldView {
                 IBlockState res = loaded.setBlockState(pos, state);
                 if (res != null) {
                     loaded.markDirty();
-                    return true;
                 }
-                return false;
+                // Chunk.setBlockState bypasses World.setBlockState's TileEntity creation.
+                // Create the TE here so chests placed by generators have one immediately.
+                if (state.getBlock().hasTileEntity(state)) {
+                    TileEntity te = loaded.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+                    if (te == null) {
+                        te = state.getBlock().createTileEntity(world, state);
+                        if (te != null) {
+                            te.setWorld(world);
+                            te.setPos(pos);
+                            loaded.addTileEntity(pos, te);
+                        }
+                    }
+                }
+                return res != null;
             }
         }
 
@@ -308,6 +320,21 @@ public class ThreadLocalWorldView {
     }
 
     @Nullable
+    private static TileEntity createMissingTileEntity(World world, BlockPos pos, IBlockState state) {
+        if (state == null || !state.getBlock().hasTileEntity(state)) {
+            return null;
+        }
+        TileEntity te = state.getBlock().createTileEntity(world, state);
+        if (te == null) {
+            return null;
+        }
+        te.setWorld(world);
+        te.setPos(pos);
+        setTileEntity(world, pos, te);
+        return te;
+    }
+
+    @Nullable
     public static TileEntity getTileEntity(World world, BlockPos pos) {
         GenerationWorkerContext ctx = CURRENT_CONTEXT.get();
         if (ctx == null) {
@@ -328,7 +355,7 @@ public class ThreadLocalWorldView {
             if (stagedInProto != null) {
                 return stagedInProto;
             }
-            return null;
+            return createMissingTileEntity(world, pos, proto.getBlockState(pos));
         }
 
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
@@ -337,6 +364,7 @@ public class ThreadLocalWorldView {
             if (te != null) {
                 return te;
             }
+            return createMissingTileEntity(world, pos, loaded.getBlockState(pos));
         }
 
         // Staged cross-chunk block: return the live TE instance so generators can
