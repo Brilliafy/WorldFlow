@@ -369,7 +369,11 @@ public class ThreadLocalWorldView {
 
         // Staged cross-chunk block: return the live TE instance so generators can
         // configure it before the block is flushed into the real chunk.
-        return CascadeBlockBuffer.INSTANCE.getStagedTileEntity(world, pos);
+        TileEntity staged = CascadeBlockBuffer.INSTANCE.getStagedTileEntity(world, pos);
+        if (staged != null) {
+            return staged;
+        }
+        return createMissingTileEntity(world, pos, CascadeBlockBuffer.INSTANCE.getStagedBlockState(world, pos));
     }
 
     public static boolean setTileEntity(World world, BlockPos pos, TileEntity tileEntity) {

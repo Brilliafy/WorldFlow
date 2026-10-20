@@ -334,6 +334,23 @@ public class CascadeBlockBuffer {
         return totalFlushed;
     }
 
+    /** Returns the latest staged block state at a position, or null. Used to create missing TEs. */
+    @Nullable
+    public IBlockState getStagedBlockState(World world, BlockPos pos) {
+        Map<ChunkPos, List<StagedBlock>> dimMap = this.memoryStaging.get(world.provider.getDimension());
+        if (dimMap == null) return null;
+        List<StagedBlock> list = dimMap.get(new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4));
+        if (list == null) return null;
+        synchronized (list) {
+            for (StagedBlock block : list) {
+                if (block.x == pos.getX() && block.y == pos.getY() && block.z == pos.getZ()) {
+                    return block.state;
+                }
+            }
+        }
+        return null;
+    }
+
     /** Drops staged data for an area that is being unloaded (prevents unbounded StagedBlock retention). */
     public void discardArea(WorldServer world, int centerX, int centerZ, int radius) {
         int dim = world.provider.getDimension();

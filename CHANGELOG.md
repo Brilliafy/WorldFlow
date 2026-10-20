@@ -37,6 +37,16 @@
   bypasses `World.setBlockState`'s TE creation). Same-state proto rewrites also create
   a missing TE. Fixes the remaining Roguelike `setLootTable` NPE and keeps chest loot.
 
+### OTG base generation
+- The parallel OTG terrain path now supplies a thread-local `ForgeChunkBuffer`
+  to `getHighestBlockInCurrentlyPopulatingChunk` through an accessor + redirect.
+  Previously the synchronized `getBlocks` path was bypassed, the shared
+  `chunkBuffer` field stayed null, and woodland-mansion starts threw NPEs.
+- Pending-request admission is blocked during the save window, so `unloadarea`
+  drops cannot start features while `saveAll` iterates saved data.
+- Staged-block lookups create a missing TileEntity from the staged state (chest
+  loot tables in cross-chunk structures).
+
 ### Save correctness
 - `awaitQuiesce` now honors the save window as well as the quiesce window; external
   producers (bench/pregen) stay blocked for the whole `WorldServer.saveAll`, not

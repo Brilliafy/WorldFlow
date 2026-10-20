@@ -5,6 +5,7 @@ import com.cleanroommc.worldflow.cascade.staging.GenerationContext;
 import com.cleanroommc.worldflow.config.ModConfig;
 import com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext;
 import com.pg85.otg.common.LocalMaterialData;
+import com.pg85.otg.forge.generator.ForgeChunkBuffer;
 import com.pg85.otg.forge.generator.OTGChunkGenerator;
 import com.pg85.otg.forge.materials.ForgeMaterialData;
 import com.pg85.otg.forge.util.NBTHelper;
@@ -20,7 +21,9 @@ import net.minecraft.world.chunk.Chunk;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
+import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
@@ -64,6 +67,25 @@ public abstract class OTGChunkGeneratorMixin {
         if (chunk != null) {
             cir.setReturnValue(chunk);
         }
+    }
+
+    /**
+     * The parallel terrain path bypasses OTG's synchronized getBlocks(), which is the
+     * only place that fills {@code chunkBuffer}. Structure generation calls
+     * getHighestBlockInCurrentlyPopulatingChunk() during the generate() call; return
+     * this worker's buffer instead of the shared (null) field.
+     */
+    @Redirect(method = "getHighestBlockInCurrentlyPopulatingChunk",
+              at = @At(value = "FIELD",
+                       target = "Lcom/pg85/otg/forge/generator/OTGChunkGenerator;chunkBuffer:Lcom/pg85/otg/forge/generator/ForgeChunkBuffer;",
+                       opcode = Opcodes.GETFIELD),
+              remap = false)
+    private ForgeChunkBuffer worldflow$currentChunkBuffer(OTGChunkGenerator self) {
+        ForgeChunkBuffer parallel = OTGParallelContext.CURRENT_BUFFER.get();
+        if (parallel != null) {
+            return parallel;
+        }
+        return ((OTGChunkGeneratorAccessor) self).worldflow$getChunkBuffer();
     }
 
     @Inject(method = "setBlock(IIILcom/pg85/otg/common/LocalMaterialData;Lcom/pg85/otg/util/bo3/NamedBinaryTag;)V",

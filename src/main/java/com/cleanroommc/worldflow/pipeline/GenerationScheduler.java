@@ -382,6 +382,10 @@ public class GenerationScheduler {
         return System.currentTimeMillis() < this.quiescingUntilMs.get();
     }
 
+    public boolean isSaveWindowActive() {
+        return System.currentTimeMillis() < this.saveWindowUntilMs.get();
+    }
+
     public void beginSaveWindow(long maxBlockMs) {
         this.saveWindowUntilMs.accumulateAndGet(System.currentTimeMillis() + Math.max(1000L, maxBlockMs), Math::max);
     }
@@ -1463,6 +1467,12 @@ public class GenerationScheduler {
     }
 
     private void drainPendingRequests() {
+        // Never admit new generations during a save: unloadarea's drops call this
+        // from the server thread, which otherwise starts features while saveAll is
+        // iterating Recurrent Complex's saved data.
+        if (isQuiescing() || isSaveWindowActive()) {
+            return;
+        }
         int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
         while (this.inFlight.size() < maxInFlight && !this.pendingRequestQueue.isEmpty()) {
             StatusHolder holder = this.pendingRequestQueue.poll();

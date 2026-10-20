@@ -21,6 +21,9 @@ import java.lang.reflect.Method;
  */
 public class OTGParallelContext {
 
+    /** Per-worker buffer currently used by the parallel OTG terrain path. */
+    public static final ThreadLocal<ForgeChunkBuffer> CURRENT_BUFFER = new ThreadLocal<>();
+
     /**
      * OTG's {@code ObjectSpawner} is a single shared instance per world and is not
      * thread-safe: it holds the population {@code Random}, cascade flags, biome
@@ -128,7 +131,12 @@ public class OTGParallelContext {
         try {
             ForgeChunkBuffer buffer = bufferConstructor.newInstance(coord);
             ChunkProviderOTG provider = getProvider(world);
-            provider.generate((ChunkBuffer) buffer);
+            CURRENT_BUFFER.set(buffer);
+            try {
+                provider.generate((ChunkBuffer) buffer);
+            } finally {
+                CURRENT_BUFFER.remove();
+            }
             Chunk chunk = (Chunk) toChunkMethod.invoke(buffer, world.getWorld());
             if (chunk != null) {
                 fillBiomeArray(world, chunk);
