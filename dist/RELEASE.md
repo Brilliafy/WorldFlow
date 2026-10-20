@@ -62,8 +62,10 @@ install**. The mod defaults to one plotter thread; the patch is provided under
   zero self-heals.
 - **Long soak:** contiguous radius-16 areas (33-chunk step, 1,089 chunks each) with
   `/worldflow unloadarea` after every area; error counter and heap sampled per area.
-  The final build ran 0 errors across the sampled areas with the heap stable around
-  6.3-7.3 GB used under `-Xmx8G`.
+  The stable build (one plotter thread, unpatched OTG) ran a contiguous soak with
+  zero CMEs, fallbacks, crashes or self-heals and the heap stable around
+  4.4-6.3 GB used under `-Xmx8G`. One rare OTG `placeTree` NPE occurred; see
+  known limitations.
 - **Backup:** every `.mca` in the real Dregora backup validated (3,109 files,
   2,639,510 chunk slots, 544,106 empty slots, **0 bad headers/offsets/compression**).
 - **Terrain determinism:** independent generation runs produce identical biomes,
@@ -86,3 +88,6 @@ install**. The mod defaults to one plotter thread; the patch is provided under
 - 8 GB is enough for a contiguous pregen in testing, but 12 GB is recommended for a
   full Dregora world. Disjoint test areas can look like a leak because border
   structures are never spawned and stay cached.
+- Rare OTG `ForgeWorld.placeTree` NPE (world field null on a parallel resource
+  worker) can skip a tree; one occurrence in roughly 27,000 chunks during the
+  final soak. Under investigation; it does not affect terrain or chunk publication.

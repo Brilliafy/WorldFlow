@@ -21,8 +21,11 @@ patched OTG 9.7 jar, Cleanroom 0.6.13, Java 26, ZGC, `-Xms1G -Xmx8G`.
 - Each area is followed by `/worldflow unloadarea <cx> <cz> 16`.
 - Error counter tracks `ConcurrentModificationException`, decoration fallbacks,
   self-heals, incomplete holders, and TE/chest NPEs.
-- Result at the time of writing: **0 errors** across 22+ fresh areas, heap stable
-  around 6.3–7.3 GB used (ZGC), throughput 10–44 chunks/s (area/EC dependent).
+- Stable build (unpatched OTG, one plotter thread): **0 CMEs, 0 fallbacks,
+  0 self-heals** across the sampled areas; heap stable around 4.4-6.3 GB used
+  (ZGC); throughput 11-95 chunks/s (area/EC dependent).
+- One rare OTG `placeTree` NPE (parallel resource worker, world field null) was
+  logged in roughly 27,000 chunks; a tree is skipped, terrain/publication unaffected.
 
 ## Memory
 
