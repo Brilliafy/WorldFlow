@@ -52,8 +52,10 @@ slower; use it for verification worlds, not for production pre-generation.
 - **Errors:** repeated radius-32 benchmarks (4,225 chunks each) on fresh areas with
   zero decoration fallbacks, zero ConcurrentModificationExceptions, zero crashes,
   zero self-heals.
-- **Long soak:** 2 hours of fresh radius-16 areas (1,089 chunks each) with
+- **Long soak:** contiguous radius-16 areas (33-chunk step, 1,089 chunks each) with
   `/worldflow unloadarea` after every area; error counter and heap sampled per area.
+  The final build ran 0 errors across the sampled areas with the heap stable around
+  6.3-7.3 GB used under `-Xmx8G`.
 - **Backup:** every `.mca` in the real Dregora backup validated (3,109 files,
   2,639,510 chunk slots, 544,106 empty slots, **0 bad headers/offsets/compression**).
 - **Terrain determinism:** independent generation runs produce identical biomes,
@@ -73,3 +75,6 @@ slower; use it for verification worlds, not for production pre-generation.
   Dell 90 W USB-C adapter (HA90NM190 / 492-BBUU / 0H1P9K) removes the clamp.
 - A save that overlaps a long structure plot can wait for the plot to finish; the
   save window is bounded and the server continues afterwards.
+- 8 GB is enough for a contiguous pregen in testing, but 12 GB is recommended for a
+  full Dregora world. Disjoint test areas can look like a leak because border
+  structures are never spawned and stay cached.
