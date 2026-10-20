@@ -58,7 +58,12 @@ public class ChunkEventHandler {
         GenerationScheduler.getInstance().quiesceAndDrain(worldServer, 60000L);
 
         if (ModConfig.GENERAL.persistStagedBlocks) {
-            CascadeSavedData.get(event.getWorld()).markDirty();
+            CascadeSavedData savedData = CascadeSavedData.get(event.getWorld());
+            int pruned = savedData.pruneGenerated(worldServer);
+            if (pruned > 0) {
+                com.cleanroommc.worldflow.WorldFlow.LOGGER.info("[WorldFlow] Pruned {} generated chunk(s) from persisted staging", pruned);
+            }
+            savedData.markDirty();
         }
     }
 

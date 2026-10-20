@@ -2,6 +2,8 @@ package com.cleanroommc.worldflow.command;
 
 import com.cleanroommc.worldflow.WorldFlow;
 import com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer;
+import com.cleanroommc.worldflow.cascade.staging.CascadeSavedData;
+import com.cleanroommc.worldflow.cascade.staging.StagedBlock;
 import com.cleanroommc.worldflow.config.ModConfig;
 import com.cleanroommc.worldflow.noise.VectorNoiseEngine;
 import com.cleanroommc.worldflow.pregen.PregeneratorEngine;
@@ -154,14 +156,21 @@ public class CommandWorldFlow extends CommandBase {
             Map<?, ?> fast = (Map<?, ?>) getField(plotter, "plottedChunksFastCache");
             long staged = CascadeBlockBuffer.INSTANCE.stagedBlockCount();
             long stagedChunks = CascadeBlockBuffer.INSTANCE.stagedChunkCount();
+            long savedStaged = 0L;
+            try {
+                for (java.util.List<StagedBlock> list : CascadeSavedData.get(world).getStagedBlocks().values()) {
+                    savedStaged += list.size();
+                }
+            } catch (Throwable ignored) {
+            }
             Runtime rt = Runtime.getRuntime();
             long heap = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L);
             sender.sendMessage(new TextComponentString(TextFormatting.GOLD + String.format(
-                    "OTGStats wInfo regions=%d slots=%d filled=%d unique=%d | plotter regions=%d slots=%d filled=%d unique=%d | byName %d keys/%d entries | byGroup %d keys/%d entries | plotted=%d fast=%d | staged %d blocks/%d chunks | heap=%dMB",
+                    "OTGStats wInfo regions=%d slots=%d filled=%d unique=%d | plotter regions=%d slots=%d filled=%d unique=%d | byName %d keys/%d entries | byGroup %d keys/%d entries | plotted=%d fast=%d | staged %d blocks/%d chunks | savedStaged %d | heap=%dMB",
                     worldInfo.size(), slots, filled, unique.size(),
                     bo4.size(), bo4Slots, bo4Filled, uniqueBo4.size(),
                     byName.size(), byNameEntries, byGroup.size(), groupEntries,
-                    plotted.size(), fast.size(), staged, stagedChunks, heap)));
+                    plotted.size(), fast.size(), staged, stagedChunks, savedStaged, heap)));
         } catch (Throwable t) {
             sender.sendMessage(new TextComponentString(TextFormatting.RED + "otgstats failed: " + t));
             WorldFlow.LOGGER.warn("[WorldFlow] otgstats failed", t);
@@ -214,6 +223,7 @@ public class CommandWorldFlow extends CommandBase {
             }
         }
         CascadeBlockBuffer.INSTANCE.discardArea(world, cx, cz, radius);
+        CascadeBlockBuffer.INSTANCE.trim(2_000_000);
         sender.sendMessage(new TextComponentString(TextFormatting.GREEN + "Queued unload for " + queued + " chunks around ["
                 + cx + ", " + cz + "] radius " + radius + " (staged data discarded)"));
     }

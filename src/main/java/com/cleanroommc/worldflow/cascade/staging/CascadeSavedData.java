@@ -62,6 +62,24 @@ public class CascadeSavedData extends WorldSavedData {
         }
     }
 
+    /** Removes saved staging for chunks that already exist on disk; those writes are no longer pending. */
+    public int pruneGenerated(net.minecraft.world.WorldServer world) {
+        int removed = 0;
+        java.util.Iterator<Map.Entry<ChunkPos, List<StagedBlock>>> iterator = this.stagedBlocks.entrySet().iterator();
+        while (iterator.hasNext()) {
+            ChunkPos pos = iterator.next().getKey();
+            if (world.getChunkProvider().chunkLoader != null
+                    && world.getChunkProvider().chunkLoader.isChunkGeneratedAt(pos.x, pos.z)) {
+                iterator.remove();
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            this.markDirty();
+        }
+        return removed;
+    }
+
     @Override
     public NBTTagCompound writeToNBT(NBTTagCompound compound) {
         NBTTagList chunkList = new NBTTagList();

@@ -7,5 +7,6 @@
   "compatibilityLevel": "JAVA_8",
   "mixins": [
     "RadiationHelperMixin"
-  ]
+  ],
+  "plugin": "com.cleanroommc.worldflow.mixin.WorldFlowMixinPlugin"
 }

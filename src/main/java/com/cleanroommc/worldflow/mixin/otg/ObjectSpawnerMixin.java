@@ -127,7 +127,12 @@ public abstract class ObjectSpawnerMixin {
             lock.unlock();
         }
         if (structure != null && structure.start != null) {
-            structure.spawnInChunk(coord, acc.worldflow$world(), pop);
+            // A BO4 structure spans many chunks and each chunk can be spawned by a
+            // different worker. Its smoothing-area lists are plain ArrayLists; serialize
+            // only spawns of the same structure so unrelated structures still run in parallel.
+            synchronized (structure) {
+                structure.spawnInChunk(coord, acc.worldflow$world(), pop);
+            }
         }
     }
 

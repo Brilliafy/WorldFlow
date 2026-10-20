@@ -344,6 +344,37 @@ public class CascadeBlockBuffer {
         return count;
     }
 
+    /**
+     * Hard cap for the in-memory staging frontier. Drops whole chunk entries (oldest
+     * iteration order is arbitrary) until the block count is under the cap. This is a
+     * safety valve for long pregens; normal chunk loads/unloadarea flush first.
+     */
+    public int trim(int maxBlocks) {
+        long count = stagedBlockCount();
+        if (count <= maxBlocks) {
+            return 0;
+        }
+        int removedChunks = 0;
+        outer:
+        for (Map<ChunkPos, List<StagedBlock>> dimMap : this.memoryStaging.values()) {
+            java.util.Iterator<Map.Entry<ChunkPos, List<StagedBlock>>> iterator = dimMap.entrySet().iterator();
+            while (iterator.hasNext()) {
+                List<StagedBlock> list = iterator.next().getValue();
+                iterator.remove();
+                count -= list.size();
+                removedChunks++;
+                if (count <= maxBlocks) {
+                    break outer;
+                }
+            }
+        }
+        if (removedChunks > 0) {
+            WorldFlow.LOGGER.warn("[WorldFlow] Staging cap: trimmed {} chunk entries; {} blocks remain (cap {})",
+                    removedChunks, count, maxBlocks);
+        }
+        return removedChunks;
+    }
+
     public long stagedChunkCount() {
         long count = 0L;
         for (Map<ChunkPos, List<StagedBlock>> map : this.memoryStaging.values()) {
@@ -383,6 +414,18 @@ public class CascadeBlockBuffer {
                 if (entities != null) entities.remove(cp);
             }
         }
+        // Also drop the persisted copy; otherwise CascadeSavedData keeps every area's
+        // staged blocks alive for the rest of the session and the staging file grows forever.
+        CascadeSavedData savedData = CascadeSavedData.get(world);
+        boolean dirty = false;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                if (savedData.getStagedBlocks().remove(new ChunkPos(centerX + dx, centerZ + dz)) != null) {
+                    dirty = true;
+                }
+            }
+        }
+        if (dirty) savedData.markDirty();
         Map<Long, net.minecraft.tileentity.TileEntity> tes = this.stagedTileEntities.get(dim);
         if (tes != null) {
             int minX = (centerX - radius) << 4;

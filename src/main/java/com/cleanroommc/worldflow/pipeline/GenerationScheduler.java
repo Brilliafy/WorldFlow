@@ -1125,7 +1125,12 @@ public class GenerationScheduler {
                         // default-structure pass; all serialized mod generators take WC.
                         com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
                         try {
-                            generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                            try {
+                                generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                            } catch (Throwable t) {
+                                if (t instanceof VirtualMachineError) throw (VirtualMachineError) t;
+                                WorldFlow.LOGGER.warn("[WorldFlow] Generator {} failed in chunk [{}, {}]; continuing with remaining generators", generator.getClass().getName(), chunkX, chunkZ, t);
+                            }
                         } finally {
                             com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
                         }
@@ -1140,7 +1145,12 @@ public class GenerationScheduler {
                 this.parallelCount.incrementAndGet();
                 long genStart = System.nanoTime();
                 try {
-                    generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                    try {
+                        generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                    } catch (Throwable t) {
+                        if (t instanceof VirtualMachineError) throw (VirtualMachineError) t;
+                        WorldFlow.LOGGER.warn("[WorldFlow] Generator {} failed in chunk [{}, {}]; continuing with remaining generators", generator.getClass().getName(), chunkX, chunkZ, t);
+                    }
                 } finally {
                     recordGeneratorTime(generator.getClass().getSimpleName(), System.nanoTime() - genStart);
                 }
@@ -1213,7 +1223,7 @@ public class GenerationScheduler {
     }
 
     private void putCarverCache(long key, ProtoChunk proto) {
-        if (this.carverCache.size() > 8192) {
+        if (this.carverCache.size() > 2048) {
             Iterator<Long> it = this.carverCache.keySet().iterator();
             int evicted = 0;
             while (it.hasNext() && evicted < 1024) {

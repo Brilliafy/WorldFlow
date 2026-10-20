@@ -12,6 +12,7 @@
     "ForgeEngineMixin",
     "ForgeWorldMixin",
     "ForgeWorldNullGuardMixin",
+    "SmoothingAreaNullGuardMixin",
     "OreGenMixin",
     "CustomStructureCacheMixin",
     "CustomStructurePlotterMixin",
@@ -31,5 +32,6 @@
     "CustomStructurePlotterAccessor"
   ],
   "server": [],
-  "client": []
+  "client": [],
+  "plugin": "com.cleanroommc.worldflow.mixin.WorldFlowMixinPlugin"
 }

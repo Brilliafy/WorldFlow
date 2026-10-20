@@ -1,5 +1,35 @@
 # WorldFlow Changelog
 
+## v1.0.2 — 2026-10-20
+
+### Optional integrations / standalone
+- New Mixin config plugin uses Forge `Loader.isModLoaded` to skip RC/BOP/Roguelike/
+  NC/OTG mixins when those mods are absent. Previously the optional mixin classes
+  could be loaded on a bare server.
+- Verified on **plain Forge 1.12.2-14.23.5.2864** (Java 8) with MixinBooter **11.8**:
+  WorldFlow alone boots and benches 289 chunks at 45.7 c/s, 0 errors.
+  MixinBooter 10.2 fails (`MixinTargetAlreadyLoadedException` on World); use 11.8.
+- Biomes O' Plenty (a non-OTG generation mod) on the same plain Forge: 36.4 c/s,
+  0 errors; unknown generators stay on the serialized safety path.
+
+### Memory (heap dump analysis)
+- Eclipse MAT on a live 4.4 GB heap dump: no WorldFlow plotter leak. Largest
+  retainers were OTG's global BO4 object definitions (1,998 objects / 522 MB,
+  plus 747 MB NBT) and OTG's `CachedBiomeGenerator` (403 MB) — the pack's fixed
+  structures and the biome cache.
+- Capped OTG's biome cache from 4096 to 512 entries and the per-worker read cache
+  from 8192 to 512. Saves roughly 250-300 MB at steady state.
+- The 8 GB heap was mostly ZGC headroom over a ~4.4 GB live set; 12 GB is the
+  recommended heap for the full Dregora pack.
+
+### Stability
+- Worker entity spawns are staged and spawned on the server thread (fixes Aether's
+  `world.loadedEntityList` tick CME / hard crash).
+- Per-generator exception isolation: one mod generator failure no longer fails the
+  whole chunk; remaining generators run and the chunk publishes normally.
+- BOP grass/plant missing-variant guards; OTG smoothing null guard + per-structure
+  spawn lock; carver cache 8192 -> 2048; staging cap/trim + persisted staging cleanup.
+
 ## v1.0.1 — 2026-10-20
 
 ### placeTree NPE

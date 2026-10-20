@@ -10,6 +10,7 @@
     "WorldMixin",
     "WorldServerMixin",
     "WorldServerSaveMixin",
+    "WorldServerSpawnEntityMixin",
     "ChunkMixin",
     "PlayerChunkMapEntryMixin",
     "ChunkProviderServerMixin",
@@ -20,8 +21,11 @@
     "MapGenStructureDataMixin",
     "EntityTrackerMixin",
     "compat.RCSavedDataMixin",
+    "compat.BOPGrassStateMixin",
+    "compat.BOPPlantStateMixin",
     "compat.WorldEditor1_12LootMixin"
   ],
   "server": [],
-  "client": []
+  "client": [],
+  "plugin": "com.cleanroommc.worldflow.mixin.WorldFlowMixinPlugin"
 }
