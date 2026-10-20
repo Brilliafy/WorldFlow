@@ -31,7 +31,9 @@ public class OTGStructureService {
     public static final java.util.concurrent.atomic.AtomicLong CALL_COUNT = new java.util.concurrent.atomic.AtomicLong();
 
     private static final java.util.concurrent.atomic.AtomicInteger PLOT_THREAD_ID = new java.util.concurrent.atomic.AtomicInteger(1);
-    private static final ExecutorService STRUCTURE_EXECUTOR = Executors.newFixedThreadPool(4, new ThreadFactory() {
+    private static final int PLOT_THREADS = Boolean.getBoolean("worldflow.deterministic")
+            ? 1 : Math.max(1, Integer.getInteger("worldflow.plotThreads", 4));
+    private static final ExecutorService STRUCTURE_EXECUTOR = Executors.newFixedThreadPool(PLOT_THREADS, new ThreadFactory() {
         @Override
         public Thread newThread(Runnable r) {
             Thread t = new Thread(r, THREAD_NAME + "-" + PLOT_THREAD_ID.getAndIncrement());

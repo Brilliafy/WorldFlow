@@ -71,6 +71,7 @@ public class GenerationScheduler {
     private final AtomicLong serializedCount = new AtomicLong(0);
 
     public final AtomicLong guardsBlockedCount = new AtomicLong(0);
+    private final ConcurrentHashMap<String, ReentrantLock> modLocks = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> serializedGeneratorCounts = new ConcurrentHashMap<>();
 
     // Deadlock Watchdog tracking
@@ -369,6 +370,13 @@ public class GenerationScheduler {
         }
     }
 
+    private static String modKey(String className) {
+        String[] parts = className.split("\\.");
+        if (parts.length >= 3) return parts[0] + "." + parts[1] + "." + parts[2];
+        if (parts.length >= 2) return parts[0] + "." + parts[1];
+        return className;
+    }
+
     public boolean isQuiescing() {
         return System.currentTimeMillis() < this.quiescingUntilMs.get();
     }
@@ -433,14 +441,26 @@ public class GenerationScheduler {
         StatusHolder existing = this.inFlight.get(key);
         if (existing != null) {
             existing.bumpPriority(priority);
-            if (targetStatus == ChunkStatus.FULL && existing.getTargetStatus() != ChunkStatus.FULL) {
-                existing.setTargetStatus(ChunkStatus.FULL);
-                registerPendingWriters(existing);
-                if (existing.getCurrentStatus().isAtLeast(ChunkStatus.CARVERS) && !existing.isDone()) {
-                    advanceChunk(existing);
+            boolean retryNew = false;
+            if (targetStatus == ChunkStatus.FULL) {
+                synchronized (existing) {
+                    if (existing.isCarverOnlyFinished()) {
+                        // Base gen already handed this holder off as a CARVERS-only neighbour.
+                        // Its future is a terrain-only chunk; a FULL request needs a new holder.
+                        retryNew = true;
+                    } else if (existing.getTargetStatus() != ChunkStatus.FULL) {
+                        existing.setTargetStatus(ChunkStatus.FULL);
+                        registerPendingWriters(existing);
+                        if (existing.getCurrentStatus().isAtLeast(ChunkStatus.CARVERS) && !existing.isDone()) {
+                            advanceChunk(existing);
+                        }
+                    }
                 }
             }
-            return existing.getFuture();
+            if (!retryNew) {
+                return existing.getFuture();
+            }
+            this.inFlight.remove(key, existing);
         }
 
         StatusHolder pending = this.pendingRequests.get(key);
@@ -706,9 +726,16 @@ public class GenerationScheduler {
         notifyNeighboursOfCarverReadiness(pos.x, pos.z);
 
         // If target was only CARVERS (e.g. neighbour dependency), complete future and remove from inFlight!
-        if (holder.getTargetStatus() == ChunkStatus.CARVERS) {
-            holder.getFuture().complete(proto.getChunk());
-            removeInFlight(holder.getChunkKey());
+        boolean carverOnly;
+        synchronized (holder) {
+            carverOnly = holder.tryFinishCarverOnly();
+            if (carverOnly) {
+                holder.getFuture().complete(proto.getChunk());
+            }
+        }
+        if (carverOnly) {
+            // Neighbour-only holder: own/worker decoration is not part of its contract.
+            removeInFlightQuiet(holder.getChunkKey(), holder);
             return;
         }
 
@@ -864,7 +891,8 @@ public class GenerationScheduler {
             } else if (genSafety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
                 recordSerializedGenerator(generator.getClass().getName());
-                java.util.concurrent.locks.ReentrantLock lock = OTGParallelContext.getStructureLock(pos.x, pos.z);
+                java.util.concurrent.locks.ReentrantLock lock = this.modLocks.computeIfAbsent(
+                        modKey(generator.getClass().getName()), k -> new java.util.concurrent.locks.ReentrantLock());
                 boolean acquired = false;
                 try {
                     acquired = lock.tryLock(15, TimeUnit.SECONDS);
@@ -880,7 +908,12 @@ public class GenerationScheduler {
                     return;
                 }
                 try {
-                    generator.populate(pos.x, pos.z);
+                    com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
+                    try {
+                        generator.populate(pos.x, pos.z);
+                    } finally {
+                        com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
+                    }
                 } finally {
                     lock.unlock();
                 }
@@ -1068,7 +1101,8 @@ public class GenerationScheduler {
             if (safety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
                 recordSerializedGenerator(generator.getClass().getName());
-                ReentrantLock lock = this.generatorLocks.computeIfAbsent(generator, g -> new ReentrantLock());
+                ReentrantLock lock = this.modLocks.computeIfAbsent(
+                        modKey(generator.getClass().getName()), k -> new ReentrantLock());
                 boolean acquired = false;
                 long lockWaitStart = System.nanoTime();
                 try {
@@ -1082,8 +1116,8 @@ public class GenerationScheduler {
                 if (acquired) {
                     long genStart = System.nanoTime();
                     try {
-                        // Shared with OTG's default-structure pass: structure placement and
-                        // structure-map iteration must never overlap across threads.
+                        // RC/Charm village structures share process-wide maps with OTG's
+                        // default-structure pass; all serialized mod generators take WC.
                         com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
                         try {
                             generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
@@ -1382,6 +1416,12 @@ public class GenerationScheduler {
             return holder.getProtoChunk();
         }
         return this.carverCache.get(key);
+    }
+
+    /** Removes a holder whose contract is already satisfied (e.g. CARVERS-only neighbour). */
+    public void removeInFlightQuiet(long key, StatusHolder expected) {
+        this.inFlight.remove(key, expected);
+        drainPendingRequests();
     }
 
     public void removeInFlight(long key) {

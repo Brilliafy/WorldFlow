@@ -22,6 +22,7 @@ public class StatusHolder implements Comparable<StatusHolder> {
     private final CompletableFuture<Chunk> workerDoneFuture = new CompletableFuture<>();
 
     private volatile ChunkStatus targetStatus;
+    private boolean carverOnlyFinished;
     private final AtomicInteger priorityScore = new AtomicInteger(0);
     private final long submissionTimeNanos;
     private final GenerationPriority initialPriority;
@@ -111,14 +112,32 @@ public class StatusHolder implements Comparable<StatusHolder> {
         this.protoChunk.setStatus(status);
     }
 
-    public ChunkStatus getTargetStatus() {
+    public synchronized ChunkStatus getTargetStatus() {
         return this.targetStatus;
     }
 
-    public void setTargetStatus(ChunkStatus status) {
+    public synchronized void setTargetStatus(ChunkStatus status) {
         if (status.isAtLeast(this.targetStatus)) {
             this.targetStatus = status;
         }
+    }
+
+    /**
+     * Atomically decides whether this holder is a CARVERS-only neighbour request.
+     * If a FULL request upgrades the target first, this returns false and base gen
+     * continues to features instead of discarding the holder. A late upgrader sees
+     * {@link #isCarverOnlyFinished()} and creates a fresh FULL holder.
+     */
+    public synchronized boolean tryFinishCarverOnly() {
+        if (this.targetStatus == ChunkStatus.CARVERS) {
+            this.carverOnlyFinished = true;
+            return true;
+        }
+        return false;
+    }
+
+    public synchronized boolean isCarverOnlyFinished() {
+        return this.carverOnlyFinished;
     }
 
     public int getPriorityScore() {

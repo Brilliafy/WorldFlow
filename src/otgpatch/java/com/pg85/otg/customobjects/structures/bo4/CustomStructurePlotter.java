@@ -150,6 +150,7 @@ public class CustomStructurePlotter {
         boolean bFound;
         boolean bl = bFound = world.isInsidePregeneratedRegion(chunkCoordinate) || this.plottedChunksFastCache.containsKey(chunkCoordinate) || this.plottedChunksContainsKey(chunkCoordinate);
         if (bFound) {
+            if (this.plottedChunksFastCache.size() > 65536) this.plottedChunksFastCache.clear();
             this.plottedChunksFastCache.put(chunkCoordinate, Boolean.TRUE);
         }
         return bFound;
@@ -207,6 +208,7 @@ public class CustomStructurePlotter {
 
     private void setChunkOccupied0(ChunkCoordinate chunkCoord) {
         this.namesPut(chunkCoord, new ArrayList());
+        if (this.plottedChunksFastCache.size() > 65536) this.plottedChunksFastCache.clear();
         this.plottedChunksFastCache.put(chunkCoord, Boolean.TRUE);
     }
 

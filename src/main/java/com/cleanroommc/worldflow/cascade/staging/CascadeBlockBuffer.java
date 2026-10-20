@@ -334,6 +334,33 @@ public class CascadeBlockBuffer {
         return totalFlushed;
     }
 
+    /** Drops staged data for an area that is being unloaded (prevents unbounded StagedBlock retention). */
+    public void discardArea(WorldServer world, int centerX, int centerZ, int radius) {
+        int dim = world.provider.getDimension();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                ChunkPos cp = new ChunkPos(centerX + dx, centerZ + dz);
+                Map<ChunkPos, List<StagedBlock>> blocks = this.memoryStaging.get(dim);
+                if (blocks != null) blocks.remove(cp);
+                Map<ChunkPos, List<StagedTick>> ticks = this.stagedTicks.get(dim);
+                if (ticks != null) ticks.remove(cp);
+                Map<ChunkPos, List<Entity>> entities = this.stagedEntities.get(dim);
+                if (entities != null) entities.remove(cp);
+            }
+        }
+        Map<Long, net.minecraft.tileentity.TileEntity> tes = this.stagedTileEntities.get(dim);
+        if (tes != null) {
+            int minX = (centerX - radius) << 4;
+            int maxX = ((centerX + radius) << 4) + 15;
+            int minZ = (centerZ - radius) << 4;
+            int maxZ = ((centerZ + radius) << 4) + 15;
+            tes.keySet().removeIf(key -> {
+                net.minecraft.util.math.BlockPos p = net.minecraft.util.math.BlockPos.fromLong(key);
+                return p.getX() >= minX && p.getX() <= maxX && p.getZ() >= minZ && p.getZ() <= maxZ;
+            });
+        }
+    }
+
     public void clear() {
         this.memoryStaging.clear();
         this.stagedTicks.clear();

@@ -121,8 +121,9 @@ public class CommandWorldFlow extends CommandBase {
                 }
             }
         }
+        CascadeBlockBuffer.INSTANCE.discardArea(world, cx, cz, radius);
         sender.sendMessage(new TextComponentString(TextFormatting.GREEN + "Queued unload for " + queued + " chunks around ["
-                + cx + ", " + cz + "] radius " + radius));
+                + cx + ", " + cz + "] radius " + radius + " (staged data discarded)"));
     }
 
     /**

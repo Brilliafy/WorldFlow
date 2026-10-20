@@ -194,8 +194,24 @@ public class ProtoChunk {
             }
         } else {
             // Deadlock prevention (e.g. cross-chunk cycle between adjacent workers):
-            // Fall back to staging in CascadeBlockBuffer to be flushed deterministically at publish time
-            CascadeBlockBuffer.INSTANCE.stageBlock(this.world, pos, state, null, "ContendedCrossChunkLock");
+            // Fall back to staging in CascadeBlockBuffer to be flushed deterministically at publish time.
+            // Create the TileEntity now: Roguelike places a chest and immediately calls setLootTable;
+            // a null TE here silently dropped the loot table.
+            net.minecraft.nbt.NBTTagCompound teNbt = null;
+            if (state.getBlock().hasTileEntity(state)) {
+                net.minecraft.tileentity.TileEntity te = state.getBlock().createTileEntity(this.world, state);
+                if (te != null) {
+                    te.setWorld(this.world);
+                    te.setPos(pos);
+                    CascadeBlockBuffer.INSTANCE.stageTileEntity(this.world, pos, te);
+                    teNbt = te.writeToNBT(new net.minecraft.nbt.NBTTagCompound());
+                } else {
+                    CascadeBlockBuffer.INSTANCE.stageTileEntity(this.world, pos, null);
+                }
+            } else {
+                CascadeBlockBuffer.INSTANCE.stageTileEntity(this.world, pos, null);
+            }
+            CascadeBlockBuffer.INSTANCE.stageBlock(this.world, pos, state, teNbt, "ContendedCrossChunkLock");
             return true;
         }
     }

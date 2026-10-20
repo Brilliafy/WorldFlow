@@ -76,6 +76,11 @@ public class GenerationWorkerPool {
         }
 
         int maxTotal = getMaxTotalWorkers();
+        // Deterministic mode: one base and one feature thread preserve chunk order, which
+        // makes order-dependent decoration bit-identical (at the cost of parallelism).
+        if (Boolean.getBoolean("worldflow.deterministic")) {
+            maxTotal = 1;
+        }
         // Start minimal; the autoscaler ramps to max the moment there is work.
         int initialBase = 1;
         int initialFeat = 1;

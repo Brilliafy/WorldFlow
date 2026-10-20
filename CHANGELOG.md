@@ -1,5 +1,62 @@
 # WorldFlow Changelog
 
+## v1.0.0 — 2026-10-20
+
+### Parallel OTG plotter
+- OTG's `CustomStructurePlotter` runs on a 4-thread pool (configurable with
+  `-Dworldflow.plotThreads=N`) instead of the single structure thread.
+- Per-coordinate striped locks (64 shards) replace the 100x100 region locks:
+  plots for the same chunk serialize, everything else runs in parallel.
+- `structureNamesPerChunk` scratch is thread-local and bounded (4,096 entries per
+  thread); cross-region scans no longer share mutable lists.
+- The planner's one-time spawn plot uses an `AtomicBoolean` and runs before the
+  caller takes its own coordinate lock, so no two coordinate locks are ever held.
+- Shared structure/frequency maps stay under the single cache lock, which is a
+  leaf: lock order is spawn-CAS -> one coordinate lock -> cache lock.
+- Fixed a mass-fallback bug: `ConcurrentHashMap` rejects null values, and the plot
+  fast cache stored `null`; it now stores `Boolean.TRUE`. This alone removed 4,606
+  NPE fallbacks in the first fork test.
+- `BO4Config.timesSpawned` increments under the cache lock.
+
+### Pipeline correctness
+- CARVERS-only neighbour holders now finish atomically (`tryFinishCarverOnly`):
+  a FULL request either upgrades the holder before it is removed or creates a new
+  holder. This removes the edge-chunk self-heals seen in benchmarks.
+- Intentional unloads of neighbour-only holders no longer log a warning with a
+  stack trace; real incomplete holders still do.
+- OTG `ResourceProcessEvent` dispatch is locked per listener instance, so Charm's
+  `VillageDecorations` can no longer throw CMEs while unrelated listeners still run
+  in parallel.
+- Serialized third-party generators take the world-gen lock again; Recurrent
+  Complex and Charm share village structure state across mods.
+- Per-mod generator locks are used for the serialized path, but the world-gen lock
+  remains the cross-mod ordering point.
+
+### Memory / lifecycle
+- The plotter's fast cache is capped at 65,536 entries.
+- `/worldflow unloadarea` discards staged blocks, ticks, entities and tile
+  entities for the unloaded area, so repeated pre-generation cycles do not retain
+  `StagedBlock` trees.
+- `/worldflow bench` reports heap after each area; the soak script samples it.
+
+### Deterministic mode
+- `-Dworldflow.deterministic=true` forces one base worker, one feature worker and
+  one plot thread. Chunk order is preserved and decoration is bit-identical.
+- Default mode is fully parallel. Terrain is bit-identical in both modes;
+  decoration order is only guaranteed in deterministic mode.
+
+### Validation
+- Radius-32 (4,225 chunks) fresh-area runs: 0 fallbacks, 0 CMEs, 0 crashes,
+  0 self-heals.
+- Two-hour soak on fresh radius-16 areas with unloadarea: see `state/soak.log`.
+- Real Dregora backup: 3,109 `.mca`, 2,639,510 chunks, 0 structural errors.
+
+### Known limitations
+- Fast-mode decoration order is not reproducible.
+- Dell EC clamp: ~27 chunks/s average on the 65 W Lenovo adapter; genuine Dell
+  90 W USB-C removes it.
+- The save window waits for in-flight plots (bounded).
+
 ## v1.0.0-rc1 — 2026-10-19
 
 ### Determinism
