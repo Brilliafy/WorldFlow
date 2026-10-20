@@ -52,6 +52,10 @@
   even if a structure worker adds an entry in the same tick. This removes the
   remaining `MapStorage` ConcurrentModificationException.
 
+- Roguelike's `setLootTable` now recreates a missing chest/TE at the target
+  position and sets the table; if that is impossible it skips instead of throwing
+  an NPE. Removes the last recurring dungeon error.
+
 ### Save correctness
 - `awaitQuiesce` now honors the save window as well as the quiesce window; external
   producers (bench/pregen) stay blocked for the whole `WorldServer.saveAll`, not

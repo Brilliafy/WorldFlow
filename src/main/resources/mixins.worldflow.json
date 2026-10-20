@@ -19,7 +19,8 @@
     "MapStorageMixin",
     "MapGenStructureDataMixin",
     "EntityTrackerMixin",
-    "compat.RCSavedDataMixin"
+    "compat.RCSavedDataMixin",
+    "compat.WorldEditor1_12LootMixin"
   ],
   "server": [],
   "client": []
