@@ -2,9 +2,13 @@
 
 ## v1.0.0 — 2026-10-20
 
-### Parallel OTG plotter
-- OTG's `CustomStructurePlotter` runs on a 4-thread pool (configurable with
-  `-Dworldflow.plotThreads=N`) instead of the single structure thread.
+### Parallel OTG plotter (experimental)
+- OTG's `CustomStructurePlotter` can run on a 4-thread pool (binary patch,
+  `-Dworldflow.plotThreads=N`). The 4-thread patch is **not shipped as the
+  default**: a long contiguous soak filled the 8 GB heap through the OTG structure
+  cache. The stable install uses one plotter thread.
+- The pipeline, per-resource OTG resources, save/TE/RC fixes below are included
+  regardless.
 - Per-coordinate striped locks (64 shards) replace the 100x100 region locks:
   plots for the same chunk serialize, everything else runs in parallel.
 - `structureNamesPerChunk` scratch is thread-local and bounded (4,096 entries per

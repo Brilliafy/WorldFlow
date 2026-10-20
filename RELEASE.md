@@ -7,8 +7,8 @@ WorldFlow 1.0.0 is the first release with the parallel OTG structure plotter.
 | File | Purpose |
 |---|---|
 | `worldflow-1.0.0.jar` | the mod (parallel pipeline + parallel OTG plotter support) |
-| `OpenTerrainGenerator-1.12.2-v9.7.jar` | OTG 9.7 with the parallel plotter binary patch |
-| `OpenTerrainGenerator-1.12.2-v9.7.jar.orig` | untouched OTG 9.7 (rollback) |
+| `OpenTerrainGenerator-1.12.2-v9.7-original.jar` | untouched OTG 9.7 (use this) |
+| `experimental/OpenTerrainGenerator-...-patched.jar` | 4-thread plotter binary patch (experimental) |
 
 ## Requirements
 
@@ -22,7 +22,7 @@ WorldFlow 1.0.0 is the first release with the parallel OTG structure plotter.
 1. Stop the server.
 2. Back up the existing `mods/OpenTerrainGenerator-1.12.2-v9.7.jar`.
 3. Copy `worldflow-1.0.0.jar` into `mods/`.
-4. Copy the patched `OpenTerrainGenerator-1.12.2-v9.7.jar` into `mods/`.
+4. Use the **unpatched** `OpenTerrainGenerator-1.12.2-v9.7.jar` (or restore the original from this bundle).
 5. Start the server.
 
 The first start rebuilds no world data. Existing chunks are never overwritten: the
@@ -41,11 +41,19 @@ The world files are compatible in both directions.
 
 | Property | Default | Meaning |
 |---|---|---|
-| `-Dworldflow.plotThreads=N` | 4 | OTG structure plotter threads |
+| `-Dworldflow.plotThreads=N` | 1 | OTG structure plotter threads (1 is the safe value without the experimental patch) |
 | `-Dworldflow.deterministic=true` | off | 1 base worker, 1 feature worker, 1 plot thread; preserves chunk order |
 
 `worldflow.deterministic` makes order-dependent decoration reproducible. It is much
 slower; use it for verification worlds, not for production pre-generation.
+
+## Parallel plotter status
+
+The 4-thread `CustomStructurePlotter` binary patch is implemented and passes
+functional radius-32 tests, but a long contiguous soak showed the OTG structure
+cache growing until the 8 GB heap filled. It is therefore **not part of the stable
+install**. The mod defaults to one plotter thread; the patch is provided under
+`experimental/` for testing with more memory and future work.
 
 ## Validation performed
 
