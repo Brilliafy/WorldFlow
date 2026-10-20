@@ -47,6 +47,11 @@
 - Staged-block lookups create a missing TileEntity from the staged state (chest
   loot tables in cross-chunk structures).
 
+- Recurrent Complex's `WorldStructureGenerationData` now uses concurrent sets/maps
+  and set-multimaps, so `MapStorage.saveAll` iterates weakly consistent snapshots
+  even if a structure worker adds an entry in the same tick. This removes the
+  remaining `MapStorage` ConcurrentModificationException.
+
 ### Save correctness
 - `awaitQuiesce` now honors the save window as well as the quiesce window; external
   producers (bench/pregen) stay blocked for the whole `WorldServer.saveAll`, not

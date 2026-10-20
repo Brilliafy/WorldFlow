@@ -18,7 +18,8 @@
     "BiomeDecoratorMixin",
     "MapStorageMixin",
     "MapGenStructureDataMixin",
-    "EntityTrackerMixin"
+    "EntityTrackerMixin",
+    "compat.RCSavedDataMixin"
   ],
   "server": [],
   "client": []
