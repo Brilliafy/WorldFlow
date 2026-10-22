@@ -3,69 +3,50 @@ package com.cleanroommc.worldflow.mixin.otg;
 import com.pg85.otg.util.FifoMap;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.Constant;
 import org.spongepowered.asm.mixin.injection.ModifyConstant;
+import org.spongepowered.asm.mixin.injection.Redirect;
 
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * OTG's {@code CachedBiomeGenerator} caches biome data in a {@link FifoMap}, which is not
- * thread-safe (backed by a LinkedHashMap). A plain {@code synchronized(map)} around every get
- * serialises all workers - measured as a 3x inflation of OTG populate time with 4 workers.
- *
- * <p>Biome cache entries are immutable for a given chunk coordinate, so a per-thread
- * read-through cache is safe: reads almost always hit the thread-local map, and the global
- * map is only touched on a miss or a write.</p>
+ * OTG's CachedBiomeGenerator uses a non-thread-safe FifoMap. Keep one shared,
+ * concurrent read-through cache per biome generator; no process-wide monitor and
+ * no per-thread divergence in biome identity.
  */
 @Mixin(targets = "com.pg85.otg.generator.biome.CachedBiomeGenerator", remap = false)
 public abstract class CachedBiomeGeneratorMixin {
 
-    private static final ThreadLocal<HashMap<Object, Object>> WORLD_FLOW_LOCAL_BIOME_CACHE =
-            ThreadLocal.withInitial(HashMap::new);
-    private static final int WORLD_FLOW_LOCAL_MAX = 512;
+    private static final ConcurrentHashMap<FifoMap, ConcurrentHashMap<Object, Object>> WORLD_FLOW_CACHES =
+            new ConcurrentHashMap<>();
+    private static final int WORLD_FLOW_MAX = 512;
 
-    /**
-     * OTG's global cache is a FifoMap(4096) of ~256x256 biome chunks (~300 KB each),
-     * i.e. >1 GB when full. 512 entries is enough for the pipeline's working set.
-     */
+    private static ConcurrentHashMap<Object, Object> worldflow$cache(FifoMap map) {
+        return WORLD_FLOW_CACHES.computeIfAbsent(map, ignored -> new ConcurrentHashMap<>());
+    }
+
+    /** OTG's global cache is a FifoMap(4096) of ~1 KB biome chunks. */
     @ModifyConstant(method = "<init>", constant = @Constant(intValue = 4096), remap = false)
     private int worldflow$capBiomeCache(int original) {
-        return 512;
+        return WORLD_FLOW_MAX;
     }
 
     @Redirect(method = "getBiomeCacheChunk",
             at = @At(value = "INVOKE", target = "Lcom/pg85/otg/util/FifoMap;get(Ljava/lang/Object;)Ljava/lang/Object;"),
             remap = false)
     private Object worldflow$cachedBiomeGet(FifoMap map, Object key) {
-        HashMap<Object, Object> local = WORLD_FLOW_LOCAL_BIOME_CACHE.get();
-        Object value = local.get(key);
-        if (value != null) {
-            return value;
-        }
-        synchronized (map) {
-            value = map.get(key);
-        }
-        if (value != null) {
-            if (local.size() >= WORLD_FLOW_LOCAL_MAX) {
-                local.clear();
-            }
-            local.put(key, value);
-        }
-        return value;
+        return worldflow$cache(map).get(key);
     }
 
     @Redirect(method = "getBiomeCacheChunk",
             at = @At(value = "INVOKE", target = "Lcom/pg85/otg/util/FifoMap;put(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;"),
             remap = false)
     private Object worldflow$cachedBiomePut(FifoMap map, Object key, Object value) {
-        HashMap<Object, Object> local = WORLD_FLOW_LOCAL_BIOME_CACHE.get();
-        if (local.size() >= WORLD_FLOW_LOCAL_MAX) {
-            local.clear();
+        ConcurrentHashMap<Object, Object> cache = worldflow$cache(map);
+        if (cache.size() >= WORLD_FLOW_MAX) {
+            cache.clear();
         }
-        local.put(key, value);
-        synchronized (map) {
-            return map.put(key, value);
-        }
+        cache.put(key, value);
+        return null;
     }
 }

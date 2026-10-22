@@ -184,7 +184,8 @@ public class GenerationWorkerPool {
         if (ModConfig.CONCURRENCY != null && ModConfig.CONCURRENCY.parallelWorkerThreads > 0) {
             return ModConfig.CONCURRENCY.parallelWorkerThreads;
         }
-        return Math.min(6, detectPhysicalCores() + 2);
+        int available = Runtime.getRuntime().availableProcessors();
+        return Math.max(4, Math.min(128, available > 2 ? available - 2 : available));
     }
 
     public static int effectiveThreads() {
@@ -320,6 +321,7 @@ public class GenerationWorkerPool {
                 pool.setCorePoolSize(target);
                 pool.setMaximumPoolSize(target);
             }
+            pool.prestartAllCoreThreads();
         }
     }
 

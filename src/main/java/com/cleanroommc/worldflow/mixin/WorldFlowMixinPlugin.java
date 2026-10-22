@@ -37,6 +37,11 @@ public class WorldFlowMixinPlugin implements IMixinConfigPlugin {
         switch (simple) {
             case "RCSavedDataMixin":
                 return modLoaded("reccomplex");
+            case "RCHandlerMixin":
+            case "RecurrentHandlerAccessor":
+                return modLoaded("rltweaker") && modLoaded("reccomplex");
+            case "MazeExecutorMixin":
+                return modLoaded("reccomplex");
             case "BOPGrassStateMixin":
             case "BOPPlantStateMixin":
                 return modLoaded("biomesoplenty");

@@ -154,23 +154,23 @@ public class ProtoChunk {
         if (chunk == null) {
             return Blocks.AIR.getDefaultState();
         }
-        if (ownedByCurrentThread()) {
-            return chunk.getBlockState(worldX & 15, y, worldZ & 15);
-        }
-        boolean acquired = this.chunkLock.tryLock();
-        try {
-            chunk = this.underlyingChunk;
-            return chunk != null ? chunk.getBlockState(worldX & 15, y, worldZ & 15) : Blocks.AIR.getDefaultState();
-        } finally {
-            if (acquired) {
-                this.chunkLock.unlock();
-            }
-        }
+        return chunk.getBlockState(worldX & 15, y, worldZ & 15);
     }
 
     public boolean setBlockState(BlockPos pos, IBlockState state) {
         if (pos.getY() < 0 || pos.getY() >= 256 || state == null) {
             return false;
+        }
+        if (ownedByCurrentThread()) {
+            Chunk chunk = this.underlyingChunk;
+            if (chunk == null) {
+                return false;
+            }
+            IBlockState oldState = chunk.setBlockState(pos, state);
+            if (oldState != null) {
+                updateTileEntity(chunk, pos, oldState, state);
+            }
+            return oldState != null;
         }
         boolean acquired = false;
         try {

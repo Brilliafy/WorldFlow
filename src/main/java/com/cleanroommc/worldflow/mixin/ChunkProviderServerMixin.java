@@ -99,43 +99,27 @@ public abstract class ChunkProviderServerMixin {
                 return;
             }
 
-            // In flight: bump priority and pump the pipeline while waiting. The old 60s blind
-            // park deadlocked the server whenever a hand-off was lost; pumping self-heals it
-            // within milliseconds and keeps the worker pools fed.
+            // Non-blocking main-thread handling. Never park the server or wait on a
+            // worker future here: that is the old priority-inversion freeze. Keep
+            // pumping the ready queue and serve the current proto to the caller.
             holder.bumpPriority(com.cleanroommc.worldflow.pipeline.GenerationPriority.IMMEDIATE);
-            com.cleanroommc.worldflow.pipeline.ServerStallWatchdog.recordMainThreadWaitStart(x, z);
-            long deadline = System.currentTimeMillis() + 10000L;
-            try {
-                while (!holder.isWorkerDone() && !holder.isDone() && System.currentTimeMillis() < deadline) {
-                    GenerationScheduler.getInstance().pump(holder);
-                    if (holder.isWorkerDone() || holder.isDone()) {
-                        break;
-                    }
-                    try {
-                        holder.getWorkerDoneFuture().get(4L, java.util.concurrent.TimeUnit.MILLISECONDS);
-                    } catch (java.util.concurrent.TimeoutException expected) {
-                        // not ready yet - loop and pump again
-                    }
-                }
-            } catch (Throwable t) {
-                com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] Main thread wait on chunk [{}, {}] finished with: {}", x, z, t.toString());
-            } finally {
-                com.cleanroommc.worldflow.pipeline.ServerStallWatchdog.recordMainThreadWaitEnd();
-            }
-
-            if (holder.getCurrentStatus().isAtLeast(com.cleanroommc.worldflow.pipeline.ChunkStatus.LIGHT)) {
+            GenerationScheduler.getInstance().pump(holder);
+            if (holder.isDone()
+                    || holder.getCurrentStatus().isAtLeast(com.cleanroommc.worldflow.pipeline.ChunkStatus.LIGHT)) {
                 PublishManager.INSTANCE.publishChunk(this.world, holder);
-                cir.setReturnValue(holder.getProtoChunk().getChunk());
-                return;
+                Chunk ready = holder.getProtoChunk().getChunk();
+                if (ready != null) {
+                    cir.setReturnValue(ready);
+                    return;
+                }
             }
 
-            // Serve partially ready chunk — never fall back to full inline populate!
+            // Serve the in-progress proto rather than blocking for completion.
             Chunk readyChunk = holder.getProtoChunk().getChunk();
             if (readyChunk == null) {
                 readyChunk = new Chunk(this.world, x, z);
                 holder.getProtoChunk().setUnderlyingChunk(readyChunk);
             }
-            PublishManager.INSTANCE.publishChunk(this.world, holder);
             cir.setReturnValue(readyChunk);
             return;
         }
@@ -151,7 +135,12 @@ public abstract class ChunkProviderServerMixin {
         if (chunk != null) {
             long key = ChunkPos.asLong(x, z);
             StatusHolder holder = GenerationScheduler.getInstance().getInFlight(key);
-            if (holder != null && !holder.isDone()) {
+            // Only a fully published pipeline chunk may satisfy a holder future.
+            // A partial proto/placeholder returned by the non-blocking provideChunk
+            // path must never be promoted to FULL here.
+            if (holder != null && !holder.isDone()
+                    && chunk instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk
+                    && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) chunk).worldflow$isPublished()) {
                 holder.getProtoChunk().setUnderlyingChunk(chunk);
                 holder.getProtoChunk().setTerrainPopulated(true);
                 holder.setCurrentStatus(com.cleanroommc.worldflow.pipeline.ChunkStatus.FULL);

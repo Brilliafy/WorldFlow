@@ -1,6 +1,5 @@
 package com.cleanroommc.worldflow.mixin.otg;
 
-import com.cleanroommc.worldflow.pipeline.otg.OTGStructureService;
 import com.pg85.otg.customobjects.structures.CustomStructureCache;
 import com.pg85.otg.util.ChunkCoordinate;
 import org.spongepowered.asm.mixin.Mixin;
@@ -8,29 +7,27 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import java.util.Random;
-
 @Mixin(value = CustomStructureCache.class, remap = false)
 public abstract class CustomStructureCacheMixin {
 
-    @Inject(method = "plotBo4Structures(Ljava/util/Random;Lcom/pg85/otg/util/ChunkCoordinate;)V",
-            at = @At("HEAD"),
-            cancellable = true,
-            remap = false)
-    private void worldflow$onPlotBo4Structures(Random rand, ChunkCoordinate chunkCoord, CallbackInfo ci) {
-        if (!OTGStructureService.isStructureThread()) {
-            ci.cancel();
-            OTGStructureService.executePlot((CustomStructureCache) (Object) this, rand, chunkCoord);
+    @org.spongepowered.asm.mixin.Shadow
+    private java.util.Map<ChunkCoordinate, com.pg85.otg.customobjects.structures.StructureDataRegion> worldInfoChunks;
+
+    @Inject(method = "<init>", at = @At("RETURN"), remap = false)
+    private void worldflow$initConcurrent(com.pg85.otg.common.LocalWorld world, CallbackInfo ci) {
+        if (!(this.worldInfoChunks instanceof java.util.concurrent.ConcurrentHashMap)) {
+            this.worldInfoChunks = new java.util.concurrent.ConcurrentHashMap<>(this.worldInfoChunks != null ? this.worldInfoChunks : java.util.Collections.emptyMap());
         }
     }
 
-    @Inject(method = "plotBo4Structure(Lcom/pg85/otg/customobjects/bo4/BO4;Ljava/util/ArrayList;Lcom/pg85/otg/util/ChunkCoordinate;)Lcom/pg85/otg/util/ChunkCoordinate;",
+    @Inject(method = "addToWorldInfoChunks(Lcom/pg85/otg/customobjects/structures/CustomStructure;Lcom/pg85/otg/util/ChunkCoordinate;Z)V",
             at = @At("HEAD"),
             cancellable = true,
             remap = false)
-    private void worldflow$onPlotBo4Structure(com.pg85.otg.customobjects.bo4.BO4 structure, java.util.ArrayList<String> biomes, ChunkCoordinate chunkCoord, org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<ChunkCoordinate> cir) {
-        if (!OTGStructureService.isStructureThread()) {
-            cir.setReturnValue(OTGStructureService.executePlotSingle((CustomStructureCache) (Object) this, structure, biomes, chunkCoord));
-        }
+    private void worldflow$concurrentAddToWorldInfoChunks(com.pg85.otg.customobjects.structures.CustomStructure structure, ChunkCoordinate chunkCoordinate, boolean requiresSave, CallbackInfo ci) {
+        ci.cancel();
+        ChunkCoordinate regionCoord = chunkCoordinate.toRegionCoord();
+        com.pg85.otg.customobjects.structures.StructureDataRegion chunkRegion = this.worldInfoChunks.computeIfAbsent(regionCoord, k -> new com.pg85.otg.customobjects.structures.StructureDataRegion());
+        chunkRegion.setStructure(chunkCoordinate.getRegionInternalX(), chunkCoordinate.getRegionInternalZ(), structure, requiresSave);
     }
 }

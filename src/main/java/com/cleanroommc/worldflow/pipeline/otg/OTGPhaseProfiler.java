@@ -4,9 +4,9 @@ import java.util.concurrent.atomic.AtomicLongArray;
 
 /** OTG population phase timings (resources-before, BO4 spawn, resources-after). */
 public final class OTGPhaseProfiler {
-    public static final AtomicLongArray NANOS = new AtomicLongArray(3);
-    public static final AtomicLongArray CALLS = new AtomicLongArray(3);
-    private static final ThreadLocal<long[]> START = ThreadLocal.withInitial(() -> new long[3]);
+    public static final AtomicLongArray NANOS = new AtomicLongArray(5);
+    public static final AtomicLongArray CALLS = new AtomicLongArray(5);
+    private static final ThreadLocal<long[]> START = ThreadLocal.withInitial(() -> new long[5]);
 
     private OTGPhaseProfiler() {
     }

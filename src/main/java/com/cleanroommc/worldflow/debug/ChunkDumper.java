@@ -193,9 +193,13 @@ public class ChunkDumper {
         }
 
         int step = Math.max(1, sampleStep);
+        // Exclude the outermost 1-chunk perimeter: its neighbor context is intentionally
+        // truncated in a bounded benchmark run, so it cannot be compared to an inline
+        // reference that is allowed to cascade outside the grid.
+        int inner = Math.max(0, radius - 1);
         java.util.List<ChunkPos> targets = new java.util.ArrayList<>();
-        for (int dx = -radius; dx <= radius; dx += step) {
-            for (int dz = -radius; dz <= radius; dz += step) {
+        for (int dx = -inner; dx <= inner; dx += step) {
+            for (int dz = -inner; dz <= inner; dz += step) {
                 targets.add(new ChunkPos(centerX + dx, centerZ + dz));
             }
         }

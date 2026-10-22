@@ -607,7 +607,7 @@ public class GenerationScheduler {
             if (!holder.isCarversDone() && !holder.isBaseGenRunning()) {
                 long ageMs = holder.getBaseGenScheduledAtNanos() > 0L
                         ? (now - holder.getBaseGenScheduledAtNanos()) / 1_000_000L : Long.MAX_VALUE;
-                if (!holder.isBaseGenScheduled() || ageMs > 1000L) {
+                if (!holder.isBaseGenScheduled() || ageMs > 30_000L) {
                     holder.resetBaseGenScheduled();
                     advanceChunk(holder);
                 }
@@ -630,10 +630,12 @@ public class GenerationScheduler {
                     holder.setFeaturesRunning(false);
                     holder.resetFeaturesScheduled();
                 }
-                // 30s, not 1s: a task that is merely QUEUED is not stuck. Retrying after 1s
-                // duplicated decoration for every chunk waiting in a >1s queue.
+                // If the feature pool is empty, a scheduled feature task was lost or
+                // rejected. Requeue immediately. Otherwise keep the 30s guard to avoid
+                // duplicating a task that is merely waiting in a busy queue.
+                boolean featureQueueEmpty = GenerationWorkerPool.getInstance().getQueueSize() == 0;
                 if (!holder.isFeaturesRunning()
-                        && (!holder.isFeaturesScheduled() || ageMs > 30_000L)) {
+                        && (!holder.isFeaturesScheduled() || ageMs > 30_000L || featureQueueEmpty)) {
                     holder.resetFeaturesScheduled();
                     checkAndScheduleFeatures(holder);
                 }
@@ -886,42 +888,13 @@ public class GenerationScheduler {
             long populateStart = System.nanoTime();
             GeneratorSafetyLevel genSafety = CompatRegistry.INSTANCE.getSafetyLevel(generator);
             if (isOtg) {
-                // OTG population is protected at a finer granularity: per-Resource locks
-                // (TreeGen lazy loads etc.), a structure-cache lock against plotting, and
-                // the shared world-gen lock around placeDefaultStructures. This lets the
-                // ore/tree/plant phases of different chunks run in parallel.
                 this.serializedCount.incrementAndGet();
                 recordSerializedGenerator(generator.getClass().getName());
                 generator.populate(pos.x, pos.z);
             } else if (genSafety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
                 recordSerializedGenerator(generator.getClass().getName());
-                java.util.concurrent.locks.ReentrantLock lock = this.modLocks.computeIfAbsent(
-                        modKey(generator.getClass().getName()), k -> new java.util.concurrent.locks.ReentrantLock());
-                boolean acquired = false;
-                try {
-                    acquired = lock.tryLock(15, TimeUnit.SECONDS);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                }
-                if (!acquired) {
-                    // Nothing has been decorated yet, so a retry is safe and lossless.
-                    // Publishing via the fallback here dropped ores/trees/structures from
-                    // every chunk unlucky enough to wait behind a long BO4 plot.
-                    WorldFlow.LOGGER.warn("[WorldFlow] Timed out waiting for structure lock for chunk [{}, {}]; requeueing decoration", pos.x, pos.z);
-                    holder.resetFeaturesScheduled();
-                    return;
-                }
-                try {
-                    com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
-                    try {
-                        generator.populate(pos.x, pos.z);
-                    } finally {
-                        com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
-                    }
-                } finally {
-                    lock.unlock();
-                }
+                generator.populate(pos.x, pos.z);
             } else {
                 this.parallelCount.incrementAndGet();
                 generator.populate(pos.x, pos.z);
@@ -1106,40 +1079,16 @@ public class GenerationScheduler {
             if (safety == GeneratorSafetyLevel.SERIALIZE) {
                 this.serializedCount.incrementAndGet();
                 recordSerializedGenerator(generator.getClass().getName());
-                ReentrantLock lock = this.modLocks.computeIfAbsent(
-                        modKey(generator.getClass().getName()), k -> new ReentrantLock());
-                boolean acquired = false;
-                long lockWaitStart = System.nanoTime();
+                long genStart = System.nanoTime();
                 try {
-                    acquired = lock.tryLock(10, TimeUnit.SECONDS);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                } finally {
-                    this.generatorLockWaitNanos.addAndGet(System.nanoTime() - lockWaitStart);
-                    this.generatorLockWaits.incrementAndGet();
-                }
-                if (acquired) {
-                    long genStart = System.nanoTime();
                     try {
-                        // RC/Charm village structures share process-wide maps with OTG's
-                        // default-structure pass; all serialized mod generators take WC.
-                        com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
-                        try {
-                            try {
-                                generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
-                            } catch (Throwable t) {
-                                if (t instanceof VirtualMachineError) throw (VirtualMachineError) t;
-                                WorldFlow.LOGGER.warn("[WorldFlow] Generator {} failed in chunk [{}, {}]; continuing with remaining generators", generator.getClass().getName(), chunkX, chunkZ, t);
-                            }
-                        } finally {
-                            com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
-                        }
-                    } finally {
-                        lock.unlock();
-                        recordGeneratorTime(generator.getClass().getSimpleName(), System.nanoTime() - genStart);
+                        generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
+                    } catch (Throwable t) {
+                        if (t instanceof VirtualMachineError) throw (VirtualMachineError) t;
+                        WorldFlow.LOGGER.warn("[WorldFlow] Generator {} failed in chunk [{}, {}]; continuing with remaining generators", generator.getClass().getName(), chunkX, chunkZ, t);
                     }
-                } else {
-                    WorldFlow.LOGGER.warn("[WorldFlow] Timed out acquiring lock for generator {} in chunk [{}, {}]", generator.getClass().getName(), chunkX, chunkZ);
+                } finally {
+                    recordGeneratorTime(generator.getClass().getSimpleName(), System.nanoTime() - genStart);
                 }
             } else if (safety == GeneratorSafetyLevel.PARALLEL_SAFE) {
                 this.parallelCount.incrementAndGet();
@@ -1178,6 +1127,11 @@ public class GenerationScheduler {
         long published = PublishManager.INSTANCE.totalChunksPublished.get();
         long now = System.currentTimeMillis();
 
+        // A worker can finish decoration and set ownDecorationDone, then its queued
+        // publish can be lost if the main-thread queue was bypassed. Re-enqueue every
+        // completed-but-unpublished holder instead of leaving it parked forever.
+        sweepPublishable();
+
         if (published > this.watchdogLastPublished.get()) {
             this.watchdogLastPublished.set(published);
             this.watchdogLastProgressTime.set(now);
@@ -1194,6 +1148,25 @@ public class GenerationScheduler {
                 pump(h);
             } catch (Throwable t) {
                 WorldFlow.LOGGER.warn("[WorldFlow] Watchdog failed to advance chunk [{}, {}]", h.getPos().x, h.getPos().z, t);
+            }
+
+            // Stage 4 recovery: ownDone is a terminal worker prerequisite. If the
+            // publish queue lost the wakeup, force reconciliation on the tick thread.
+            if (h.isOwnDecorationDone() && !h.isDone() && !h.getFuture().isDone()) {
+                WorldServer world = h.getWorld();
+                if (world != null) {
+                    if (world.isCallingFromMinecraftThread()) {
+                        PublishManager.INSTANCE.publishChunk(world, h);
+                    } else {
+                        if (!PublishManager.INSTANCE.isPending(h)) {
+                            h.resetPublishEnqueued();
+                            if (h.markPublishEnqueued()) {
+                                PublishManager.INSTANCE.enqueueReady(h);
+                            }
+                        }
+                        world.addScheduledTask(() -> PublishManager.INSTANCE.publishChunk(world, h));
+                    }
+                }
             }
         }
 
@@ -1303,6 +1276,8 @@ public class GenerationScheduler {
         double otgBefore = com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.avgMs(0);
         double otgBo4 = com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.avgMs(1);
         double otgAfter = com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.avgMs(2);
+        double otgStruct = com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.avgMs(3);
+        double otgBio = com.cleanroommc.worldflow.pipeline.otg.OTGPhaseProfiler.avgMs(4);
         long lockWaits = this.generatorLockWaits.get();
         double avgGenLockWaitMs = lockWaits > 0 ? (this.generatorLockWaitNanos.get() / 1_000_000.0) / lockWaits : 0.0;
 
@@ -1332,7 +1307,7 @@ public class GenerationScheduler {
                 GenerationWorkerPool.getInstance().getFeaturesWorkerCount());
 
         WorldFlow.LOGGER.info(String.format(
-                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | OTG: %.1fms | ForgeGen: %.1fms | Light: %.1fms | Plot: %.1fms (wait %.1fms) | GenLockWait: %.1fms | Pub: flush %.1f load %.1f ev %.1f | OTG: res %.1f bo4 %.1f res2 %.1f | Serialized: %d | Parallel: %d | Guards blocked: %d | Workers: base=%d feat=%d (auto)",
+                "[WorldFlow Metrics] Rate: %.1f chunks/s (%.0f chunks/min) | Published: %d | path=pipeline:%d / path=inline:%d | Queue Depth: %d | In-Flight: %d | Avg BaseGen: %.1fms | Avg Features: %.1fms | OTG: %.1fms | ForgeGen: %.1fms | Light: %.1fms | Plot: %.1fms (wait %.1fms) | GenLockWait: %.1fms | Pub: flush %.1f load %.1f ev %.1f | OTG: res %.1f bo4 %.1f res2 %.1f struct %.1f bio %.1f | Serialized: %d | Parallel: %d | Guards blocked: %d | Workers: base=%d feat=%d (auto)",
                 chunksPerSec,
                 chunksPerMin,
                 totalPublished,
@@ -1349,7 +1324,7 @@ public class GenerationScheduler {
                 avgPlotWaitMs,
                 avgGenLockWaitMs,
                 pubFlush, pubLoad, pubEv,
-                otgBefore, otgBo4, otgAfter,
+                otgBefore, otgBo4, otgAfter, otgStruct, otgBio,
                 this.serializedCount.get(),
                 this.parallelCount.get(),
                 this.guardsBlockedCount.get(),

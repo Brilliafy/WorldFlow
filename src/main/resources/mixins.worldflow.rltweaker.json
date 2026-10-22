@@ -1,0 +1,15 @@
+{
+  "package": "com.cleanroommc.worldflow.mixin.rltweaker",
+  "required": false,
+  "refmap": "mixins.worldflow.refmap.json",
+  "target": "@env(DEFAULT)",
+  "minVersion": "0.8.5",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "RCHandlerMixin",
+    "RecurrentHandlerAccessor"
+  ],
+  "server": [],
+  "client": [],
+  "plugin": "com.cleanroommc.worldflow.mixin.WorldFlowMixinPlugin"
+}

@@ -34,7 +34,27 @@ public abstract class OTGChunkGeneratorMixin {
     private ForgeWorld world;
 
     @Shadow
+    private com.pg85.otg.generator.ObjectSpawner spawner;
+
+    @Shadow
     private FifoMap unloadedChunksCache;
+
+    @Shadow
+    private net.minecraft.util.datafix.DataFixer dataFixer;
+
+    @Inject(method = "getChunk(II)Lnet/minecraft/world/chunk/Chunk;",
+            at = @At("HEAD"),
+            cancellable = true,
+            remap = false)
+    private void worldflow$onOTGGetChunk(int x, int z, CallbackInfoReturnable<Chunk> cir) {
+        if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            Chunk chunk = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunk(
+                    this.world.getWorld(), x >> 4, z >> 4);
+            if (chunk != null) {
+                cir.setReturnValue(chunk);
+            }
+        }
+    }
 
     @Inject(method = "getBlocks(IIZ)Lnet/minecraft/world/chunk/Chunk;",
             at = @At("HEAD"),
@@ -96,11 +116,16 @@ public abstract class OTGChunkGeneratorMixin {
         if (!com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
             return;
         }
-        if (!ModConfig.GENERAL.enableCascadeFix || !ModConfig.GENERAL.stageOTGBlocks) {
+        if (y < 0 || y >= 256 || material == null || material.isEmpty()) {
+            ci.cancel();
             return;
         }
-
-        if (y < 0 || y >= 256 || material == null || material.isEmpty()) {
+        if (!(material instanceof ForgeMaterialData)) {
+            return;
+        }
+        IBlockState state = ((ForgeMaterialData) material).internalBlock();
+        if (state == null) {
+            ci.cancel();
             return;
         }
 
@@ -110,20 +135,41 @@ public abstract class OTGChunkGeneratorMixin {
 
         if (rawWorld instanceof WorldServer) {
             WorldServer worldServer = (WorldServer) rawWorld;
-            if (worldServer.getChunkProvider().getLoadedChunk(chunkX, chunkZ) == null) {
-                // Target chunk is not loaded! Staging the block prevents the dreaded recursive provideChunk() cascade!
-                if (!(material instanceof ForgeMaterialData)) {
-                    // Not a Forge material implementation we can safely resolve; let OTG handle it normally.
-                    return;
+            Chunk chunk = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunk(worldServer, chunkX, chunkZ);
+            if (chunk != null) {
+                BlockPos pos = new BlockPos(x, y, z);
+                chunk.setBlockState(pos, state);
+                if (metaDataTag != null) {
+                    NBTTagCompound nmsTag = NBTHelper.getNMSFromNBTTagCompound(metaDataTag);
+                    nmsTag.setInteger("x", x);
+                    nmsTag.setInteger("y", y);
+                    nmsTag.setInteger("z", z);
+                    if (this.dataFixer != null) {
+                        nmsTag = this.dataFixer.process(net.minecraft.util.datafix.FixTypes.BLOCK_ENTITY, nmsTag);
+                    }
+                    net.minecraft.tileentity.TileEntity te = chunk.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+                    if (te == null && state.getBlock().hasTileEntity(state)) {
+                        te = state.getBlock().createTileEntity(worldServer, state);
+                        if (te != null) {
+                            te.setWorld(worldServer);
+                            te.setPos(pos);
+                            chunk.addTileEntity(pos, te);
+                        }
+                    }
+                    if (te != null) {
+                        te.readFromNBT(nmsTag);
+                    }
                 }
-                IBlockState state = ((ForgeMaterialData) material).internalBlock();
-                if (state == null) {
-                    return;
-                }
-                NBTTagCompound teNbt = metaDataTag != null ? NBTHelper.getNMSFromNBTTagCompound(metaDataTag) : null;
-
-                CascadeBlockBuffer.INSTANCE.stageBlock(worldServer, new BlockPos(x, y, z), state, teNbt, "OTG/Dregora");
                 ci.cancel();
+                return;
+            }
+
+            if (ModConfig.GENERAL.enableCascadeFix && ModConfig.GENERAL.stageOTGBlocks) {
+                if (worldServer.getChunkProvider().getLoadedChunk(chunkX, chunkZ) == null) {
+                    NBTTagCompound teNbt = metaDataTag != null ? NBTHelper.getNMSFromNBTTagCompound(metaDataTag) : null;
+                    CascadeBlockBuffer.INSTANCE.stageBlock(worldServer, new BlockPos(x, y, z), state, teNbt, "OTG/Dregora");
+                    ci.cancel();
+                }
             }
         }
     }
@@ -151,5 +197,20 @@ public abstract class OTGChunkGeneratorMixin {
                 CascadeBlockBuffer.INSTANCE.flushChunk(worldServer, chunk);
             }
         }
+    }
+
+    @Redirect(method = "func_185931_b",
+              at = @At(value = "FIELD",
+                       target = "Lcom/pg85/otg/forge/generator/OTGChunkGenerator;spawner:Lcom/pg85/otg/generator/ObjectSpawner;",
+                       opcode = org.objectweb.asm.Opcodes.GETFIELD),
+              remap = false)
+    private com.pg85.otg.generator.ObjectSpawner worldflow$threadLocalSpawner(OTGChunkGenerator self) {
+        if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+            com.pg85.otg.generator.ObjectSpawner localSpawner = com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext.getThreadLocalSpawner(this.world);
+            if (localSpawner != null) {
+                return localSpawner;
+            }
+        }
+        return this.spawner;
     }
 }

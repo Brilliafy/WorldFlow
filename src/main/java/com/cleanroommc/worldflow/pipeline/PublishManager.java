@@ -219,9 +219,14 @@ public class PublishManager {
                 if (entry.getChunk() != null) {
                     entry.sendToPlayers();
                 }
+            } else if (!holder.isPlayerRequested()) {
+                // Batch/pregen publish: immediately release the live chunk after its
+                // payload is committed. This keeps loadedChunks and entity lists bounded.
+                boolean hasForgeTicket = net.minecraftforge.common.ForgeChunkManager.getPersistentChunksFor(world).containsKey(holder.getPos());
+                if (!hasForgeTicket) {
+                    world.getChunkProvider().queueUnload(chunk);
+                }
             } else if (holder.isPlayerRequested() && !holder.isSkipGhostCleanup()) {
-                // Player disconnected or teleported away while chunk was generating:
-                // Queue for unload only if it was originally player-requested and does not have a persistent Forge ticket
                 boolean hasForgeTicket = net.minecraftforge.common.ForgeChunkManager.getPersistentChunksFor(world).containsKey(holder.getPos());
                 if (!hasForgeTicket) {
                     world.getChunkProvider().queueUnload(chunk);

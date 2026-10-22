@@ -6,12 +6,12 @@ import java.util.Map;
 
 @IFMLLoadingPlugin.Name("WorldFlow")
 @IFMLLoadingPlugin.MCVersion("1.12.2")
-@IFMLLoadingPlugin.SortingIndex(1001)
+@IFMLLoadingPlugin.SortingIndex(-1000)
 public class WorldFlowCorePlugin implements IFMLLoadingPlugin {
 
     @Override
     public String[] getASMTransformerClass() {
-        return new String[0];
+        return new String[] { "com.cleanroommc.worldflow.core.WorldFlowTransformer" };
     }
 
     @Override

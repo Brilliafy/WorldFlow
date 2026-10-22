@@ -18,6 +18,12 @@ public class WorldFlowLateMixinLoader implements ILateMixinLoader {
         if (Loader.isModLoaded("nuclearcraft")) {
             configs.add("mixins.worldflow.nc.json");
         }
+        if (Loader.isModLoaded("rltweaker") && Loader.isModLoaded("reccomplex")) {
+            configs.add("mixins.worldflow.rltweaker.json");
+        }
+        if (Loader.isModLoaded("reccomplex")) {
+            configs.add("mixins.worldflow.reccomplex.json");
+        }
         return configs;
     }
 }

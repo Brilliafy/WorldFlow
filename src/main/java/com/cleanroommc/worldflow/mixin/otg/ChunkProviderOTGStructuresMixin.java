@@ -25,11 +25,6 @@ public abstract class ChunkProviderOTGStructuresMixin {
                     target = "Lcom/pg85/otg/common/LocalWorld;prepareDefaultStructures(IIZ)V"),
             remap = false)
     private void worldflow$serializeDefaultStructures(LocalWorld world, int x, int z, boolean flag) {
-        WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
-        try {
-            world.prepareDefaultStructures(x, z, flag);
-        } finally {
-            WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
-        }
+        world.prepareDefaultStructures(x, z, flag);
     }
 }

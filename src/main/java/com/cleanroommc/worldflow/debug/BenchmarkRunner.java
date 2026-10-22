@@ -246,19 +246,51 @@ public class BenchmarkRunner {
                 watchdogThread.setDaemon(true);
                 watchdogThread.start();
 
-                // Pipeline chunk submission loop with backpressure and timeout cancellation checks
+                // Stage 1: Pre-prime base terrain (CARVERS) for area plus 1-chunk border in parallel
+                List<CompletableFuture<Chunk>> primerFutures = new ArrayList<>();
+                for (int dx = -radius - 1; dx <= radius + 1; dx++) {
+                    for (int dz = -radius - 1; dz <= radius + 1; dz++) {
+                        CompletableFuture<Chunk> f = GenerationScheduler.getInstance().requestCarversChunk(world, centerX + dx, centerZ + dz);
+                        if (f != null) {
+                            primerFutures.add(f);
+                        }
+                    }
+                }
+                try {
+                    CompletableFuture.allOf(primerFutures.toArray(new CompletableFuture[0])).join();
+                } catch (Throwable t) {
+                    WorldFlow.LOGGER.warn("[WorldFlow Bench] Priming had partial errors; proceeding with features", t);
+                }
+
+                // Stage 2: Partition target chunks into 4 disjoint spatial stride phases
+                @SuppressWarnings("unchecked")
+                List<BenchChunkEntry>[] stridePhases = new List[4];
+                for (int i = 0; i < 4; i++) stridePhases[i] = new ArrayList<>();
                 for (int dx = -radius; dx <= radius; dx++) {
                     for (int dz = -radius; dz <= radius; dz++) {
+                        int x = centerX + dx;
+                        int z = centerZ + dz;
+                        int p = ((x & 1) << 1) | (z & 1);
+                        stridePhases[p].add(new BenchChunkEntry(x, z, null));
+                    }
+                }
+
+                // Stage 3: Dispatch phases sequentially with non-overlapping 3x3 population windows
+                long lastLogMs = System.currentTimeMillis();
+                for (int p = 0; p < 4; p++) {
+                    if (finished.get() || !RUNNING.get()) {
+                        break;
+                    }
+
+                    List<CompletableFuture<Chunk>> phaseFutures = new ArrayList<>(stridePhases[p].size());
+                    for (BenchChunkEntry entry : stridePhases[p]) {
                         if (finished.get() || !RUNNING.get()) {
                             break;
                         }
-                        int x = centerX + dx;
-                        int z = centerZ + dz;
 
-                        // Bench backpressure: respect maxInFlight cap
                         while (!finished.get() && RUNNING.get() && GenerationScheduler.getInstance().getInFlightCount() >= maxInFlight) {
                             try {
-                                Thread.sleep(5);
+                                Thread.sleep(2);
                             } catch (InterruptedException ignored) {
                                 break;
                             }
@@ -267,23 +299,64 @@ public class BenchmarkRunner {
                             break;
                         }
 
-                        CompletableFuture<Chunk> future = GenerationScheduler.getInstance().requestChunk(
-                                world, x, z, ChunkStatus.FULL, GenerationPriority.PLAYER
+                        entry.future = GenerationScheduler.getInstance().requestChunk(
+                                world, entry.x, entry.z, ChunkStatus.FULL, GenerationPriority.IMMEDIATE
                         );
-                        entries.add(new BenchChunkEntry(x, z, future));
+                        entries.add(entry);
+                        if (entry.future != null) {
+                            phaseFutures.add(entry.future);
+                        }
                     }
-                    if (finished.get() || !RUNNING.get()) {
-                        break;
+
+                    // Await completion of this disjoint phase before moving to next phase
+                    while (!finished.get() && RUNNING.get()) {
+                        boolean allPhaseDone = true;
+                        for (CompletableFuture<Chunk> pf : phaseFutures) {
+                            if (!pf.isDone()) {
+                                allPhaseDone = false;
+                                break;
+                            }
+                        }
+                        if (allPhaseDone) {
+                            break;
+                        }
+
+                        long now = System.currentTimeMillis();
+                        if (now - lastLogMs >= 2000L) {
+                            lastLogMs = now;
+                            int completed = 0;
+                            for (BenchChunkEntry e : entries) {
+                                if (e.future != null && e.future.isDone()) {
+                                    completed++;
+                                }
+                            }
+                            double elapsedSec = Math.max(0.1, (now - startTimeMs) / 1000.0);
+                            double pct = (completed * 100.0) / totalChunks;
+                            double currentRate = completed / elapsedSec;
+                            send(server, sender, TextFormatting.AQUA + String.format(
+                                    "[WorldFlow Bench] Phase %d/4 | Progress: %d/%d (%.1f%%) | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Workers: base=%d feat=%d | Elapsed: %.1fs",
+                                    p + 1, completed, totalChunks, pct, currentRate,
+                                    GenerationScheduler.getInstance().getInFlightCount(),
+                                    GenerationWorkerPool.getInstance().getQueueSize(),
+                                    GenerationWorkerPool.getInstance().getBaseGenWorkerCount(),
+                                    GenerationWorkerPool.getInstance().getFeaturesWorkerCount(),
+                                    elapsedSec
+                            ));
+                        }
+
+                        try {
+                            Thread.sleep(25);
+                        } catch (InterruptedException e) {
+                            break;
+                        }
                     }
                 }
 
-                // Progress polling loop in benchThread
-                long lastLogMs = System.currentTimeMillis();
-
-                while (!finished.get()) {
+                // Final wait for all chunks to be marked complete
+                while (!finished.get() && RUNNING.get()) {
                     int completed = 0;
                     for (BenchChunkEntry entry : entries) {
-                        if (entry.future.isDone()) {
+                        if (entry.future != null && entry.future.isDone()) {
                             completed++;
                         }
                     }
@@ -293,26 +366,8 @@ public class BenchmarkRunner {
                         break;
                     }
 
-                    long now = System.currentTimeMillis();
-                    if (now - lastLogMs >= 5000L) {
-                        lastLogMs = now;
-                        double elapsedSec = Math.max(1.0, (now - startTimeMs) / 1000.0);
-                        double pct = (completed * 100.0) / totalChunks;
-                        double currentRate = completed / elapsedSec;
-                        send(server, sender, TextFormatting.AQUA + String.format(
-                                "[WorldFlow Bench] Progress: %d/%d (%.1f%%) | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Workers: base=%d feat=%d | Guards blocked: %d | Elapsed: %.1fs",
-                                completed, totalChunks, pct, currentRate,
-                                GenerationScheduler.getInstance().getInFlightCount(),
-                                GenerationWorkerPool.getInstance().getQueueSize(),
-                                GenerationWorkerPool.getInstance().getBaseGenWorkerCount(),
-                                GenerationWorkerPool.getInstance().getFeaturesWorkerCount(),
-                                GenerationScheduler.getInstance().getGuardsBlockedCount(),
-                                elapsedSec
-                        ));
-                    }
-
                     try {
-                        Thread.sleep(100);
+                        Thread.sleep(25);
                     } catch (InterruptedException e) {
                         break;
                     }

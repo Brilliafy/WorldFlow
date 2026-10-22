@@ -27,15 +27,59 @@ public abstract class ForgeWorldBiomeCacheMixin {
     private static final ThreadLocal<LocalBiome[][]> WORLD_FLOW_BIOMES = new ThreadLocal<>();
     @Unique
     private static final ThreadLocal<Boolean> WORLD_FLOW_VALID = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    @Unique
+    private static final java.util.concurrent.ConcurrentHashMap<Long, LocalBiome> WORLD_FLOW_POINT_BIOMES = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Shadow
     public abstract LocalBiome getBiome(int x, int z);
 
+    @Shadow
+    public abstract com.pg85.otg.generator.biome.BiomeGenerator getBiomeGenerator();
+
+    @Shadow
+    public abstract LocalBiome getBiomeByOTGIdOrNull(int id);
+
+    @Inject(method = "getCalculatedBiome", at = @At("HEAD"), cancellable = true, remap = false)
+    private void worldflow$cachedCalculatedBiome(int x, int z, CallbackInfoReturnable<LocalBiome> cir) {
+        long key = (((long) x) << 32) | (((long) z) & 0xFFFFFFFFL);
+        LocalBiome cached = WORLD_FLOW_POINT_BIOMES.get(key);
+        if (cached != null) {
+            cir.setReturnValue(cached);
+        }
+    }
+
+    @Inject(method = "getCalculatedBiome", at = @At("RETURN"), remap = false)
+    private void worldflow$recordCalculatedBiome(int x, int z, CallbackInfoReturnable<LocalBiome> cir) {
+        LocalBiome b = cir.getReturnValue();
+        if (b != null) {
+            long key = (((long) x) << 32) | (((long) z) & 0xFFFFFFFFL);
+            WORLD_FLOW_POINT_BIOMES.putIfAbsent(key, b);
+        }
+    }
+
     @Inject(method = "cacheBiomesForPopulation", at = @At("HEAD"), cancellable = true, remap = false)
     private void worldflow$threadLocalCache(ChunkCoordinate chunkCoord, CallbackInfo ci) {
+        ci.cancel();
         LocalBiome[][] biomes = new LocalBiome[32][32];
         int baseX = chunkCoord.getBlockX();
         int baseZ = chunkCoord.getBlockZ();
+        com.pg85.otg.generator.biome.BiomeGenerator gen = this.getBiomeGenerator();
+        if (gen != null) {
+            try {
+                int[] biomeIds = gen.getBiomes(null, baseX, baseZ, 32, 32, com.pg85.otg.generator.biome.OutputType.FULL);
+                if (biomeIds != null && biomeIds.length >= 1024) {
+                    for (int x = 0; x < 32; x++) {
+                        for (int z = 0; z < 32; z++) {
+                            biomes[x][z] = this.getBiomeByOTGIdOrNull(biomeIds[z * 32 + x]);
+                        }
+                    }
+                    WORLD_FLOW_BIOMES.set(biomes);
+                    WORLD_FLOW_VALID.set(Boolean.TRUE);
+                    return;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         for (int x = 0; x < 32; x++) {
             for (int z = 0; z < 32; z++) {
                 biomes[x][z] = this.getBiome(baseX + x, baseZ + z);
@@ -43,7 +87,6 @@ public abstract class ForgeWorldBiomeCacheMixin {
         }
         WORLD_FLOW_BIOMES.set(biomes);
         WORLD_FLOW_VALID.set(Boolean.TRUE);
-        ci.cancel();
     }
 
     @Inject(method = "getBiomeForPopulation", at = @At("HEAD"), cancellable = true, remap = false)

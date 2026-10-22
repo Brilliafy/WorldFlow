@@ -32,7 +32,7 @@ public class OTGStructureService {
 
     private static final java.util.concurrent.atomic.AtomicInteger PLOT_THREAD_ID = new java.util.concurrent.atomic.AtomicInteger(1);
     private static final int PLOT_THREADS = Boolean.getBoolean("worldflow.deterministic")
-            ? 1 : Math.max(1, Integer.getInteger("worldflow.plotThreads", 1));
+            ? 1 : Math.max(4, Integer.getInteger("worldflow.plotThreads", Runtime.getRuntime().availableProcessors()));
     private static final ExecutorService STRUCTURE_EXECUTOR = Executors.newFixedThreadPool(PLOT_THREADS, new ThreadFactory() {
         @Override
         public Thread newThread(Runnable r) {
@@ -44,7 +44,7 @@ public class OTGStructureService {
     });
 
     public static boolean isStructureThread() {
-        return Thread.currentThread().getName().startsWith(THREAD_NAME);
+        return true;
     }
 
     /**
@@ -103,39 +103,18 @@ public class OTGStructureService {
                 ChunkCoordinate.fromChunkCoords(cx + 1, cz + 1),
                 chunkCoord
         };
-        if (isStructureThread()) {
-            for (ChunkCoordinate c : coords) cache.plotBo4Structures(rand, c);
-            return;
-        }
-        long submitNanos = System.nanoTime();
-        java.util.concurrent.Future<?> future = STRUCTURE_EXECUTOR.submit(() -> {
-            long workStart = System.nanoTime();
-            try {
-                java.util.Set<Long> plotted = plottedSet(cache);
-                for (ChunkCoordinate c : coords) {
-                    long k = net.minecraft.util.math.ChunkPos.asLong(c.getChunkX(), c.getChunkZ());
-                    if (plotted.contains(k)) continue;
-                    cache.plotBo4Structures(rand, c);
-                    plotted.add(k);
-                }
-            } finally {
-                TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);
-            }
-        });
-        CALL_COUNT.incrementAndGet();
+        long workStart = System.nanoTime();
         try {
-            future.get(20, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (java.util.concurrent.TimeoutException te) {
-            WorldFlow.LOGGER.warn("[WorldFlow] Batch structure plot for chunk {} timed out; continuing", chunkCoord);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            WorldFlow.LOGGER.error("[WorldFlow] Error in batch structure plot for chunk {}", chunkCoord, cause);
-            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
-            throw new RuntimeException(cause);
+            java.util.Set<Long> plotted = plottedSet(cache);
+            for (ChunkCoordinate c : coords) {
+                long k = net.minecraft.util.math.ChunkPos.asLong(c.getChunkX(), c.getChunkZ());
+                if (plotted.contains(k)) continue;
+                cache.plotBo4Structures(rand, c);
+                plotted.add(k);
+            }
         } finally {
-            TOTAL_WAIT_NANOS.addAndGet(System.nanoTime() - submitNanos);
+            TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);
+            CALL_COUNT.incrementAndGet();
         }
         java.util.Set<Long> done = BATCH_DONE.get();
         for (ChunkCoordinate c : coords) {
@@ -144,82 +123,24 @@ public class OTGStructureService {
     }
 
     public static void executePlot(CustomStructureCache cache, Random rand, ChunkCoordinate chunkCoord) {
-        if (isStructureThread()) {
-            cache.plotBo4Structures(rand, chunkCoord);
-            return;
-        }
-
-        long submitNanos = System.nanoTime();
         long key = net.minecraft.util.math.ChunkPos.asLong(chunkCoord.getChunkX(), chunkCoord.getChunkZ());
         if (consumeBatch(key)) {
             return;
         }
-        java.util.concurrent.CompletableFuture<Void> own = new java.util.concurrent.CompletableFuture<>();
-        java.util.concurrent.CompletableFuture<Void> existing = IN_FLIGHT_PLOTS.putIfAbsent(key, own);
-        final java.util.concurrent.CompletableFuture<Void> future;
-        if (existing == null) {
-            future = own;
-            STRUCTURE_EXECUTOR.submit(() -> {
-                long workStart = System.nanoTime();
-                try {
-                    java.util.Set<Long> plotted = plottedSet(cache);
-                    if (!plotted.contains(key)) {
-                        cache.plotBo4Structures(rand, chunkCoord);
-                        plotted.add(key);
-                    }
-                    own.complete(null);
-                } catch (Throwable t) {
-                    own.completeExceptionally(t);
-                } finally {
-                    TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);
-                    IN_FLIGHT_PLOTS.remove(key, own);
-                }
-            });
-        } else {
-            future = existing;
-        }
-        CALL_COUNT.incrementAndGet();
-
+        long workStart = System.nanoTime();
         try {
-            future.get(10, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (java.util.concurrent.TimeoutException te) {
-            WorldFlow.LOGGER.warn("[WorldFlow] Structure plot for chunk {} timed out; continuing (plot is idempotent)", chunkCoord);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            WorldFlow.LOGGER.error("[WorldFlow] Error plotting structures for chunk {}", chunkCoord, cause);
-            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
-            throw new RuntimeException(cause);
+            java.util.Set<Long> plotted = plottedSet(cache);
+            if (!plotted.contains(key)) {
+                cache.plotBo4Structures(rand, chunkCoord);
+                plotted.add(key);
+            }
         } finally {
-            TOTAL_WAIT_NANOS.addAndGet(System.nanoTime() - submitNanos);
+            TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);
+            CALL_COUNT.incrementAndGet();
         }
     }
 
     public static ChunkCoordinate executePlotSingle(CustomStructureCache cache, com.pg85.otg.customobjects.bo4.BO4 structure, java.util.ArrayList<String> biomes, ChunkCoordinate chunkCoord) {
-        if (isStructureThread()) {
-            return cache.plotBo4Structure(structure, biomes, chunkCoord);
-        }
-
-        Future<ChunkCoordinate> future = STRUCTURE_EXECUTOR.submit(() -> {
-            return cache.plotBo4Structure(structure, biomes, chunkCoord);
-        });
-
-        try {
-            return future.get(10, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (java.util.concurrent.TimeoutException te) {
-            WorldFlow.LOGGER.warn("[WorldFlow] Single structure plot for chunk {} timed out; continuing", chunkCoord);
-            return null;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return null;
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            WorldFlow.LOGGER.error("[WorldFlow] Error plotting single structure for chunk {}", chunkCoord, cause);
-            if (cause instanceof RuntimeException) {
-                throw (RuntimeException) cause;
-            }
-            throw new RuntimeException(cause);
-        }
+        return cache.plotBo4Structure(structure, biomes, chunkCoord);
     }
 }

@@ -5,25 +5,48 @@ import com.pg85.otg.forge.materials.ForgeMaterialData;
 import com.pg85.otg.forge.world.ForgeWorld;
 import com.pg85.otg.util.ChunkCoordinate;
 import com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView;
+import net.minecraft.block.Block;
 import net.minecraft.block.state.IBlockState;
-import net.minecraft.util.math.BlockPos;
+import net.minecraft.init.Blocks;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
+import org.spongepowered.asm.mixin.Unique;
 
 /**
- * Block reads during decoration must never go through OTGChunkGenerator.getChunk().
+ * Zero-allocation, lock-free block reads during decoration.
  *
- * <p>JFR showed ForgeWorld.getMaterial calling OTGChunkGenerator.getChunk on every block read
- * (~11% of all CPU, from PlantGen/OreGen). Those chunks are already available in the worker's
- * thread-local view, so read them directly; only fall back to the original path outside the
- * population area.</p>
+ * <p>Bypasses BlockPos instantiation and OTGChunkGenerator.getChunk() by reading
+ * directly from ThreadLocalWorldView using primitive block coordinates. Caches
+ * LocalMaterialData by IBlockState ID to eliminate millions of ForgeMaterialData
+ * allocations per generation cycle.</p>
  */
 @Mixin(value = ForgeWorld.class, remap = false)
 public abstract class ForgeWorldMaterialMixin {
 
-    @org.spongepowered.asm.mixin.Unique
+    @Unique
     private static final LocalMaterialData WORLD_FLOW_AIR =
-            ForgeMaterialData.ofMinecraftBlockState(net.minecraft.init.Blocks.AIR.getDefaultState());
+            ForgeMaterialData.ofMinecraftBlockState(Blocks.AIR.getDefaultState());
+
+    @Unique
+    private static final LocalMaterialData[] STATE_TO_MATERIAL = new LocalMaterialData[8192];
+
+    @Unique
+    private static LocalMaterialData getCachedMaterial(IBlockState state) {
+        if (state == null) {
+            return WORLD_FLOW_AIR;
+        }
+        int id = Block.getStateId(state);
+        if (id >= 0 && id < STATE_TO_MATERIAL.length) {
+            LocalMaterialData cached = STATE_TO_MATERIAL[id];
+            if (cached != null) {
+                return cached;
+            }
+            LocalMaterialData mat = ForgeMaterialData.ofMinecraftBlockState(state);
+            STATE_TO_MATERIAL[id] = mat;
+            return mat;
+        }
+        return ForgeMaterialData.ofMinecraftBlockState(state);
+    }
 
     @Overwrite(remap = false)
     public LocalMaterialData getMaterial(int x, int y, int z, ChunkCoordinate chunkBeingPopulated) {
@@ -31,25 +54,28 @@ public abstract class ForgeWorldMaterialMixin {
             return WORLD_FLOW_AIR;
         }
         ForgeWorld self = (ForgeWorld) (Object) this;
-        if (chunkBeingPopulated != null
-                && com.pg85.otg.OTG.IsInAreaBeingPopulated(x, z, chunkBeingPopulated)
-                && ThreadLocalWorldView.isGenerating()) {
-            IBlockState state = ThreadLocalWorldView.getBlockState(self.getWorld(), new BlockPos(x, y, z));
-            if (state != null) {
-                return ForgeMaterialData.ofMinecraftBlockState(state);
+        if (chunkBeingPopulated != null && com.pg85.otg.OTG.IsInAreaBeingPopulated(x, z, chunkBeingPopulated)) {
+            if (ThreadLocalWorldView.isGenerating()) {
+                IBlockState state = ThreadLocalWorldView.getBlockState(self.getWorld(), x, y, z);
+                if (state != null) {
+                    return getCachedMaterial(state);
+                }
             }
+            net.minecraft.world.chunk.Chunk chunk = ThreadLocalWorldView.isGenerating()
+                    ? ThreadLocalWorldView.getChunk(self.getWorld(), x >> 4, z >> 4)
+                    : self.getWorld().getChunk(x >> 4, z >> 4);
+            if (chunk != null) {
+                return getCachedMaterial(chunk.getBlockState(x & 15, y, z & 15));
+            }
+            return WORLD_FLOW_AIR;
         }
         if (chunkBeingPopulated != null) {
-            if (!com.pg85.otg.OTG.IsInAreaBeingPopulated(x, z, chunkBeingPopulated)) {
-                return WORLD_FLOW_AIR;
-            }
-            net.minecraft.world.chunk.Chunk chunk = self.getWorld().getChunk(x >> 4, z >> 4);
-            return ForgeMaterialData.ofMinecraftBlockState(chunk.getBlockState(x & 15, y, z & 15));
+            return WORLD_FLOW_AIR;
         }
         net.minecraft.world.chunk.Chunk chunk = self.getWorld().getChunkProvider().getLoadedChunk(x >> 4, z >> 4);
         if (chunk == null) {
             return self.getChunkGenerator().getMaterialInUnloadedChunk(x, y, z);
         }
-        return ForgeMaterialData.ofMinecraftBlockState(chunk.getBlockState(x & 15, y, z & 15));
+        return getCachedMaterial(chunk.getBlockState(x & 15, y, z & 15));
     }
 }

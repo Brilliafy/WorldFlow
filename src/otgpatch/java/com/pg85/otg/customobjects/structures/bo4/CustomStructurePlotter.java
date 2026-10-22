@@ -27,19 +27,20 @@ import java.util.Map;
 import java.util.Random;
 
 public class CustomStructurePlotter {
-    private static final java.util.concurrent.locks.ReentrantLock CACHE_LOCK = new java.util.concurrent.locks.ReentrantLock();
-    private static final java.util.concurrent.locks.ReentrantLock[] REGION_LOCKS = new java.util.concurrent.locks.ReentrantLock[64];
+    private static final int STRIPES = 1024;
+    private static final java.util.concurrent.locks.ReentrantLock[] REGION_LOCKS = new java.util.concurrent.locks.ReentrantLock[STRIPES];
     static {
-        for (int i = 0; i < 64; i++) REGION_LOCKS[i] = new java.util.concurrent.locks.ReentrantLock();
+        for (int i = 0; i < STRIPES; i++) REGION_LOCKS[i] = new java.util.concurrent.locks.ReentrantLock();
     }
     private static java.util.concurrent.locks.ReentrantLock regionLock(ChunkCoordinate c) {
-        return REGION_LOCKS[((c.getChunkX() * 31) ^ c.getChunkZ()) & 63];
+        int h = (c.getChunkX() * 3129871) ^ (c.getChunkZ() * 618791);
+        return REGION_LOCKS[(h ^ (h >>> 16)) & (STRIPES - 1)];
     }
 
-    private final Map<ChunkCoordinate, BO4CustomStructure[][]> bo4StructureCache;
-    private final Map<ChunkCoordinate, PlottedChunksRegion> plottedChunks;
-    private final HashMap<String, ArrayList<ChunkCoordinate>> spawnedStructuresByName;
-    private final HashMap<String, HashMap<ChunkCoordinate, Integer>> spawnedStructuresByGroup;
+    private final java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, BO4CustomStructure[][]> bo4StructureCache;
+    private final java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, PlottedChunksRegion> plottedChunks;
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.List<ChunkCoordinate>> spawnedStructuresByName;
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, Integer>> spawnedStructuresByGroup;
     private final Object processingLock = new Object();
     private boolean processing = false;
     private final java.util.concurrent.atomic.AtomicBoolean structurePlottedAtSpawn = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -56,44 +57,25 @@ public class CustomStructurePlotter {
     private final Map<ChunkCoordinate, Object> plottedChunksFastCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     public CustomStructurePlotter() {
-        this.spawnedStructuresByName = new HashMap<String, ArrayList<ChunkCoordinate>>();
-        this.spawnedStructuresByGroup = new HashMap<String, HashMap<ChunkCoordinate, Integer>>();
-        this.bo4StructureCache = new java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, BO4CustomStructure[][]>();
-        this.plottedChunks = new java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, PlottedChunksRegion>();
+        this.spawnedStructuresByName = new java.util.concurrent.ConcurrentHashMap<>();
+        this.spawnedStructuresByGroup = new java.util.concurrent.ConcurrentHashMap<>();
+        this.bo4StructureCache = new java.util.concurrent.ConcurrentHashMap<>();
+        this.plottedChunks = new java.util.concurrent.ConcurrentHashMap<>();
     }
 
     private boolean structureCacheContainsKey(ChunkCoordinate chunkCoordinate) {
-        CACHE_LOCK.lock();
-        try { return structureCacheContainsKey0(chunkCoordinate); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private boolean structureCacheContainsKey0(ChunkCoordinate chunkCoordinate) {
         ChunkCoordinate regionCoord = chunkCoordinate.toRegionCoord();
         BO4CustomStructure[][] chunkRegion = this.bo4StructureCache.get(regionCoord);
         return chunkRegion != null && chunkRegion[chunkCoordinate.getRegionInternalX()][chunkCoordinate.getRegionInternalZ()] != null;
     }
 
     private void addToStructureCache(ChunkCoordinate chunkCoordinate, BO4CustomStructure structure) {
-        CACHE_LOCK.lock();
-        try { addToStructureCache0(chunkCoordinate, structure); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private void addToStructureCache0(ChunkCoordinate chunkCoordinate, BO4CustomStructure structure) {
         ChunkCoordinate regionCoord = chunkCoordinate.toRegionCoord();
-        BO4CustomStructure[][] chunkRegion = this.bo4StructureCache.get(regionCoord);
-        if (chunkRegion == null) {
-            chunkRegion = new BO4CustomStructure[100][100];
-            this.bo4StructureCache.put(regionCoord, chunkRegion);
-        }
+        BO4CustomStructure[][] chunkRegion = this.bo4StructureCache.computeIfAbsent(regionCoord, k -> new BO4CustomStructure[100][100]);
         chunkRegion[chunkCoordinate.getRegionInternalX()][chunkCoordinate.getRegionInternalZ()] = structure;
     }
 
     private void removeFromStructureCache(ChunkCoordinate chunkCoordinate) {
-        CACHE_LOCK.lock();
-        try { removeFromStructureCache0(chunkCoordinate); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private void removeFromStructureCache0(ChunkCoordinate chunkCoordinate) {
         ChunkCoordinate regionCoord = chunkCoordinate.toRegionCoord();
         BO4CustomStructure[][] chunkRegion = this.bo4StructureCache.get(regionCoord);
         if (chunkRegion != null) {
@@ -102,11 +84,6 @@ public class CustomStructurePlotter {
     }
 
     private BO4CustomStructure getFromStructureCache(ChunkCoordinate chunkCoordinate) {
-        CACHE_LOCK.lock();
-        try { return getFromStructureCache0(chunkCoordinate); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private BO4CustomStructure getFromStructureCache0(ChunkCoordinate chunkCoordinate) {
         ChunkCoordinate regionCoord = chunkCoordinate.toRegionCoord();
         BO4CustomStructure[][] chunkRegion = this.bo4StructureCache.get(regionCoord);
         if (chunkRegion != null) {
@@ -116,39 +93,19 @@ public class CustomStructurePlotter {
     }
 
     private boolean plottedChunksContainsKey(ChunkCoordinate chunkCoordinate) {
-        CACHE_LOCK.lock();
-        try { return plottedChunksContainsKey0(chunkCoordinate); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private boolean plottedChunksContainsKey0(ChunkCoordinate chunkCoordinate) {
         ChunkCoordinate regionCoord = chunkCoordinate.toRegionCoord();
         PlottedChunksRegion chunkRegion = this.plottedChunks.get(regionCoord);
         return chunkRegion != null && chunkRegion.getChunk(chunkCoordinate.getRegionInternalX(), chunkCoordinate.getRegionInternalZ());
     }
 
     private void addToPlottedChunks(ChunkCoordinate chunkCoordinate) {
-        CACHE_LOCK.lock();
-        try { addToPlottedChunks0(chunkCoordinate); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private void addToPlottedChunks0(ChunkCoordinate chunkCoordinate) {
         ChunkCoordinate regionCoord = chunkCoordinate.toRegionCoord();
-        PlottedChunksRegion chunkRegion = this.plottedChunks.get(regionCoord);
-        if (chunkRegion == null) {
-            chunkRegion = new PlottedChunksRegion();
-            this.plottedChunks.put(regionCoord, chunkRegion);
-        }
+        PlottedChunksRegion chunkRegion = this.plottedChunks.computeIfAbsent(regionCoord, k -> new PlottedChunksRegion());
         chunkRegion.setChunk(chunkCoordinate.getRegionInternalX(), chunkCoordinate.getRegionInternalZ());
     }
 
     public boolean isBo4ChunkPlotted(LocalWorld world, ChunkCoordinate chunkCoordinate) {
-        CACHE_LOCK.lock();
-        try { return isBo4ChunkPlotted0(world, chunkCoordinate); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private boolean isBo4ChunkPlotted0(LocalWorld world, ChunkCoordinate chunkCoordinate) {
-        boolean bFound;
-        boolean bl = bFound = world.isInsidePregeneratedRegion(chunkCoordinate) || this.plottedChunksFastCache.containsKey(chunkCoordinate) || this.plottedChunksContainsKey(chunkCoordinate);
+        boolean bFound = world.isInsidePregeneratedRegion(chunkCoordinate) || this.plottedChunksFastCache.containsKey(chunkCoordinate) || this.plottedChunksContainsKey(chunkCoordinate);
         if (bFound) {
             if (this.plottedChunksFastCache.size() > 65536) this.plottedChunksFastCache.clear();
             this.plottedChunksFastCache.put(chunkCoordinate, Boolean.TRUE);
@@ -157,11 +114,6 @@ public class CustomStructurePlotter {
     }
 
     public void addBo4ToStructureCache(ChunkCoordinate chunkCoordinate, BO4CustomStructure structure) {
-        CACHE_LOCK.lock();
-        try { addBo4ToStructureCache0(chunkCoordinate, structure); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private void addBo4ToStructureCache0(ChunkCoordinate chunkCoordinate, BO4CustomStructure structure) {
         this.addToStructureCache(chunkCoordinate, structure);
         this.addToPlottedChunks(chunkCoordinate);
         this.setChunkOccupied(chunkCoordinate);
@@ -193,21 +145,11 @@ public class CustomStructurePlotter {
     }
 
     private int getStructureCount() {
-        CACHE_LOCK.lock();
-        try { return spawnedStructuresByName.size(); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private int getStructureCount0() {
-        return this.spawnedStructuresByName.entrySet().size();
+        return this.spawnedStructuresByName.size();
     }
 
     private void setChunkOccupied(ChunkCoordinate chunkCoord) {
-        CACHE_LOCK.lock();
-        try { setChunkOccupied0(chunkCoord); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private void setChunkOccupied0(ChunkCoordinate chunkCoord) {
-        this.namesPut(chunkCoord, new ArrayList());
+        this.namesPut(chunkCoord, new ArrayList<>());
         if (this.plottedChunksFastCache.size() > 65536) this.plottedChunksFastCache.clear();
         this.plottedChunksFastCache.put(chunkCoord, Boolean.TRUE);
     }
@@ -228,12 +170,68 @@ public class CustomStructurePlotter {
         try { return plotStructures0(structureCache, targetStructure, targetBiomes, world, rand, chunkCoord, spawningStructureAtSpawn); } finally { lock.unlock(); }
     }
 
+    private static final java.util.concurrent.ConcurrentHashMap<BiomeConfig, java.util.Set<String>> BIOME_BO4_MAP =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static java.util.Set<String> getBiomeBO4Names(BiomeConfig config) {
+        if (config == null) return java.util.Collections.emptySet();
+        java.util.Set<String> set = BIOME_BO4_MAP.get(config);
+        if (set == null) {
+            set = new java.util.HashSet<>();
+            for (CustomStructureGen res : config.getCustomStructures()) {
+                if (res != null && res.objectNames != null) {
+                    for (String name : res.objectNames) {
+                        if (name != null) set.add(name);
+                    }
+                }
+            }
+            BIOME_BO4_MAP.put(config, set);
+        }
+        return set;
+    }
+
+    private boolean canStructureSpawnAt(LocalWorld world, LocalBiome centerBiome, String structureName,
+                                        BO4 targetStructure, ArrayList<String> targetBiomes,
+                                        boolean defaultStructurePresent, int cx, int cz) {
+        if (defaultStructurePresent) {
+            return false;
+        }
+        if (world.isInsidePregeneratedRegion(ChunkCoordinate.fromChunkCoords(cx, cz))) {
+            return false;
+        }
+        LocalBiome b = getChunkBiomeFast(world, cx, cz);
+        if (b == null) {
+            return false;
+        }
+        if (targetStructure != null) {
+            return targetBiomes == null || targetBiomes.isEmpty() || targetBiomes.contains(b.getName());
+        }
+        if (b.getName().equals(centerBiome.getName())) {
+            return true;
+        }
+        return getBiomeBO4Names(b.getBiomeConfig()).contains(structureName);
+    }
+
+    private final java.util.concurrent.ConcurrentHashMap<Long, LocalBiome> chunkBiomeCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private LocalBiome getChunkBiomeFast(LocalWorld world, int chunkX, int chunkZ) {
+        long key = (((long) chunkX) << 32) | (((long) chunkZ) & 0xFFFFFFFFL);
+        LocalBiome cached = this.chunkBiomeCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        LocalBiome b = world.getBiome(chunkX * 16 + 8, chunkZ * 16 + 7);
+        this.chunkBiomeCache.put(key, b);
+        return b;
+    }
+
     private BO4CustomStructure plotStructures0(CustomStructureCache structureCache, BO4 targetStructure, ArrayList<String> targetBiomes, LocalWorld world, Random rand, ChunkCoordinate chunkCoord, boolean spawningStructureAtSpawn) {
         if (!this.isBo4ChunkPlotted(world, chunkCoord)) {
-            LocalBiome biome = world.getBiome(chunkCoord.getBlockX() + 8, chunkCoord.getBlockZ() + 7);
+            LocalBiome biome = getChunkBiomeFast(world, chunkCoord.getChunkX(), chunkCoord.getChunkZ());
             BiomeConfig biomeConfig = biome.getBiomeConfig();
             ArrayList<CustomStructureGen> customStructureGens = new ArrayList<CustomStructureGen>();
-            if (targetStructure == null && !this.chunkHasDefaultStructureSafe(world, rand, chunkCoord)) {
+            boolean defaultStructurePresent = targetStructure == null && this.chunkHasDefaultStructureSafe(world, rand, chunkCoord);
+            if (!defaultStructurePresent) {
                 for (CustomStructureGen customStructureGen : biomeConfig.getCustomStructures()) {
                     customStructureGens.add(customStructureGen);
                 }
@@ -359,12 +357,10 @@ public class CustomStructurePlotter {
                                 int scanDistance = 0;
                                 Rotation fixedRotation = ((BO4)currentStructureSpawning[0]).getConfig().fixedRotation;
                                 if (!spawningStructureAtSpawn) {
+                                    String curBo4Name = ((BO4) currentStructureSpawning[0]).getName();
+                                    int originX = chunkCoord.getChunkX();
+                                    int originZ = chunkCoord.getChunkZ();
                                     while (!(leftEdgeFound && rightEdgeFound && topEdgeFound && bottomEdgeFound)) {
-                                        ArrayList<String> structuresToSpawn;
-                                        BiomeConfig biomeConfig3;
-                                        ArrayList biomeStructures;
-                                        LocalBiome biome3;
-                                        boolean canSpawnHere;
                                         int i;
                                         ++scanDistance;
                                         if (!rightEdgeFound && (fixedRotation == null && right + left + 1 >= structureWidth && right + left + 1 >= structureLength || (fixedRotation == Rotation.NORTH || fixedRotation == Rotation.SOUTH) && right + left + 1 >= structureWidth || (fixedRotation == Rotation.EAST || fixedRotation == Rotation.WEST) && right + left + 1 >= structureLength)) {
@@ -372,55 +368,11 @@ public class CustomStructurePlotter {
                                         }
                                         if (!rightEdgeFound) {
                                             for (i = -top; i <= bottom; ++i) {
-                                                canSpawnHere = false;
-                                                if (!world.isInsidePregeneratedRegion(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + scanDistance, chunkCoord.getChunkZ() + i))) {
-                                                    if (targetStructure != null) {
-                                                        if (!world.chunkHasDefaultStructure(rand, chunkCoord)) {
-                                                            if (targetBiomes.size() == 0) {
-                                                                canSpawnHere = true;
-                                                            } else {
-                                                                biome3 = world.getBiome((chunkCoord.getChunkX() + scanDistance) * 16 + 8, (chunkCoord.getChunkZ() + i) * 16 + 7);
-                                                                if (targetBiomes.contains(biome3.getName())) {
-                                                                    canSpawnHere = true;
-                                                                }
-                                                            }
-                                                        }
-                                                    } else {
-                                                        biomeStructures = (ArrayList)this.namesGet(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + scanDistance, chunkCoord.getChunkZ() + i));
-                                                        if (biomeStructures == null) {
-                                                            if (!world.chunkHasDefaultStructure(rand, chunkCoord)) {
-                                                                biome3 = world.getBiome((chunkCoord.getChunkX() + scanDistance) * 16 + 8, (chunkCoord.getChunkZ() + i) * 16 + 7);
-                                                                if (!biome3.getName().equals(biome.getName())) {
-                                                                    biomeConfig3 = biome3.getBiomeConfig();
-                                                                    structuresToSpawn = new ArrayList<String>();
-                                                                    for (CustomStructureGen res : biomeConfig3.getCustomStructures()) {
-                                                                        for (String bo4Name : res.objectNames) {
-                                                                            structuresToSpawn.add(bo4Name);
-                                                                        }
-                                                                    }
-                                                                    biomeStructures = structuresToSpawn;
-                                                                } else {
-                                                                    canSpawnHere = true;
-                                                                    biomeStructures = structuresToSpawn1;
-                                                                }
-                                                            } else {
-                                                                biomeStructures = new ArrayList();
-                                                            }
-                                                            this.namesPut(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + scanDistance, chunkCoord.getChunkZ() + i), biomeStructures);
-                                                        }
-                                                        if (biomeStructures != null) {
-                                                            for (String structureToSpawn : (java.util.ArrayList<String>) biomeStructures) {
-                                                                if (!structureToSpawn.equals(((BO4)currentStructureSpawning[0]).getName())) continue;
-                                                                canSpawnHere = true;
-                                                                break;
-                                                            }
-                                                        }
-                                                    }
-                                                } else {
-                                                    this.namesRemove(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + scanDistance, chunkCoord.getChunkZ() + i));
+                                                if (canStructureSpawnAt(world, biome, curBo4Name, targetStructure, targetBiomes, defaultStructurePresent, originX + scanDistance, originZ + i)) {
+                                                    continue;
                                                 }
-                                                if (canSpawnHere) continue;
                                                 rightEdgeFound = true;
+                                                break;
                                             }
                                             if (!rightEdgeFound) {
                                                 ++right;
@@ -431,55 +383,11 @@ public class CustomStructurePlotter {
                                         }
                                         if (!leftEdgeFound) {
                                             for (i = -top; i <= bottom; ++i) {
-                                                canSpawnHere = false;
-                                                if (!world.isInsidePregeneratedRegion(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() - scanDistance, chunkCoord.getChunkZ() + i))) {
-                                                    if (targetStructure != null) {
-                                                        if (!world.chunkHasDefaultStructure(rand, chunkCoord)) {
-                                                            if (targetBiomes.size() == 0) {
-                                                                canSpawnHere = true;
-                                                            } else {
-                                                                biome3 = world.getBiome((chunkCoord.getChunkX() - scanDistance) * 16 + 8, (chunkCoord.getChunkZ() + i) * 16 + 7);
-                                                                if (targetBiomes.contains(biome3.getName())) {
-                                                                    canSpawnHere = true;
-                                                                }
-                                                            }
-                                                        }
-                                                    } else {
-                                                        biomeStructures = (ArrayList)this.namesGet(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() - scanDistance, chunkCoord.getChunkZ() + i));
-                                                        if (biomeStructures == null) {
-                                                            if (!world.chunkHasDefaultStructure(rand, chunkCoord)) {
-                                                                biome3 = world.getBiome((chunkCoord.getChunkX() - scanDistance) * 16 + 8, (chunkCoord.getChunkZ() + i) * 16 + 7);
-                                                                if (!biome3.getName().equals(biome.getName())) {
-                                                                    biomeConfig3 = biome3.getBiomeConfig();
-                                                                    structuresToSpawn = new ArrayList();
-                                                                    for (CustomStructureGen res : biomeConfig3.getCustomStructures()) {
-                                                                        for (String bo4Name : res.objectNames) {
-                                                                            structuresToSpawn.add(bo4Name);
-                                                                        }
-                                                                    }
-                                                                    biomeStructures = structuresToSpawn;
-                                                                } else {
-                                                                    canSpawnHere = true;
-                                                                    biomeStructures = structuresToSpawn1;
-                                                                }
-                                                            } else {
-                                                                biomeStructures = new ArrayList();
-                                                            }
-                                                            this.namesPut(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() - scanDistance, chunkCoord.getChunkZ() + i), biomeStructures);
-                                                        }
-                                                        if (biomeStructures != null) {
-                                                            for (String structureToSpawn : (java.util.ArrayList<String>) biomeStructures) {
-                                                                if (!structureToSpawn.equals(((BO4)currentStructureSpawning[0]).getName())) continue;
-                                                                canSpawnHere = true;
-                                                                break;
-                                                            }
-                                                        }
-                                                    }
-                                                } else {
-                                                    this.namesRemove(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() - scanDistance, chunkCoord.getChunkZ() + i));
+                                                if (canStructureSpawnAt(world, biome, curBo4Name, targetStructure, targetBiomes, defaultStructurePresent, originX - scanDistance, originZ + i)) {
+                                                    continue;
                                                 }
-                                                if (canSpawnHere) continue;
                                                 leftEdgeFound = true;
+                                                break;
                                             }
                                             if (!leftEdgeFound) {
                                                 ++left;
@@ -490,55 +398,11 @@ public class CustomStructurePlotter {
                                         }
                                         if (!bottomEdgeFound) {
                                             for (i = -left; i <= right; ++i) {
-                                                canSpawnHere = false;
-                                                if (!world.isInsidePregeneratedRegion(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + i, chunkCoord.getChunkZ() + scanDistance))) {
-                                                    if (targetStructure != null) {
-                                                        if (!world.chunkHasDefaultStructure(rand, chunkCoord)) {
-                                                            if (targetBiomes.size() == 0) {
-                                                                canSpawnHere = true;
-                                                            } else {
-                                                                biome3 = world.getBiome((chunkCoord.getChunkX() + i) * 16 + 8, (chunkCoord.getChunkZ() + scanDistance) * 16 + 7);
-                                                                if (targetBiomes.contains(biome3.getName())) {
-                                                                    canSpawnHere = true;
-                                                                }
-                                                            }
-                                                        }
-                                                    } else {
-                                                        biomeStructures = (ArrayList)this.namesGet(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + i, chunkCoord.getChunkZ() + scanDistance));
-                                                        if (biomeStructures == null) {
-                                                            if (!world.chunkHasDefaultStructure(rand, chunkCoord)) {
-                                                                biome3 = world.getBiome((chunkCoord.getChunkX() + i) * 16 + 8, (chunkCoord.getChunkZ() + scanDistance) * 16 + 7);
-                                                                if (!biome3.getName().equals(biome.getName())) {
-                                                                    biomeConfig3 = biome3.getBiomeConfig();
-                                                                    structuresToSpawn = new ArrayList();
-                                                                    for (CustomStructureGen res : biomeConfig3.getCustomStructures()) {
-                                                                        for (String bo4Name : res.objectNames) {
-                                                                            structuresToSpawn.add(bo4Name);
-                                                                        }
-                                                                    }
-                                                                    biomeStructures = structuresToSpawn;
-                                                                } else {
-                                                                    canSpawnHere = true;
-                                                                    biomeStructures = structuresToSpawn1;
-                                                                }
-                                                            } else {
-                                                                biomeStructures = new ArrayList();
-                                                            }
-                                                            this.namesPut(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + i, chunkCoord.getChunkZ() + scanDistance), biomeStructures);
-                                                        }
-                                                        if (biomeStructures != null) {
-                                                            for (String structureToSpawn : (java.util.ArrayList<String>) biomeStructures) {
-                                                                if (!structureToSpawn.equals(((BO4)currentStructureSpawning[0]).getName())) continue;
-                                                                canSpawnHere = true;
-                                                                break;
-                                                            }
-                                                        }
-                                                    }
-                                                } else {
-                                                    this.namesRemove(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + i, chunkCoord.getChunkZ() + scanDistance));
+                                                if (canStructureSpawnAt(world, biome, curBo4Name, targetStructure, targetBiomes, defaultStructurePresent, originX + i, originZ + scanDistance)) {
+                                                    continue;
                                                 }
-                                                if (canSpawnHere) continue;
                                                 bottomEdgeFound = true;
+                                                break;
                                             }
                                             if (!bottomEdgeFound) {
                                                 ++bottom;
@@ -547,60 +411,18 @@ public class CustomStructurePlotter {
                                         if (!topEdgeFound && (fixedRotation == null && bottom + top + 1 >= structureWidth && bottom + top + 1 >= structureLength || (fixedRotation == Rotation.NORTH || fixedRotation == Rotation.SOUTH) && bottom + top + 1 >= structureLength || (fixedRotation == Rotation.EAST || fixedRotation == Rotation.WEST) && bottom + top + 1 >= structureWidth)) {
                                             topEdgeFound = true;
                                         }
-                                        if (topEdgeFound) continue;
-                                        for (i = -left; i <= right; ++i) {
-                                            canSpawnHere = false;
-                                            if (!world.isInsidePregeneratedRegion(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + i, chunkCoord.getChunkZ() - scanDistance))) {
-                                                if (targetStructure != null) {
-                                                    if (!world.chunkHasDefaultStructure(rand, chunkCoord)) {
-                                                        if (targetBiomes.size() == 0) {
-                                                            canSpawnHere = true;
-                                                        } else {
-                                                            biome3 = world.getBiome((chunkCoord.getChunkX() + i) * 16 + 8, (chunkCoord.getChunkZ() - scanDistance) * 16 + 7);
-                                                            if (targetBiomes.contains(biome3.getName())) {
-                                                                canSpawnHere = true;
-                                                            }
-                                                        }
-                                                    }
-                                                } else {
-                                                    biomeStructures = (ArrayList)this.namesGet(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + i, chunkCoord.getChunkZ() - scanDistance));
-                                                    if (biomeStructures == null) {
-                                                        if (!world.chunkHasDefaultStructure(rand, chunkCoord)) {
-                                                            biome3 = world.getBiome((chunkCoord.getChunkX() + i) * 16 + 8, (chunkCoord.getChunkZ() - scanDistance) * 16 + 7);
-                                                            if (!biome3.getName().equals(biome.getName())) {
-                                                                biomeConfig3 = biome3.getBiomeConfig();
-                                                                structuresToSpawn = new ArrayList();
-                                                                for (CustomStructureGen res : biomeConfig3.getCustomStructures()) {
-                                                                    for (String bo4Name : res.objectNames) {
-                                                                        structuresToSpawn.add(bo4Name);
-                                                                    }
-                                                                }
-                                                                biomeStructures = structuresToSpawn;
-                                                            } else {
-                                                                canSpawnHere = true;
-                                                                biomeStructures = structuresToSpawn1;
-                                                            }
-                                                        } else {
-                                                            biomeStructures = new ArrayList();
-                                                        }
-                                                        this.namesPut(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + i, chunkCoord.getChunkZ() - scanDistance), biomeStructures);
-                                                    }
-                                                    if (biomeStructures != null) {
-                                                        for (String structureToSpawn : (java.util.ArrayList<String>) biomeStructures) {
-                                                            if (!structureToSpawn.equals(((BO4)currentStructureSpawning[0]).getName())) continue;
-                                                            canSpawnHere = true;
-                                                            break;
-                                                        }
-                                                    }
+                                        if (!topEdgeFound) {
+                                            for (i = -left; i <= right; ++i) {
+                                                if (canStructureSpawnAt(world, biome, curBo4Name, targetStructure, targetBiomes, defaultStructurePresent, originX + i, originZ - scanDistance)) {
+                                                    continue;
                                                 }
-                                            } else {
-                                                this.namesRemove(ChunkCoordinate.fromChunkCoords(chunkCoord.getChunkX() + i, chunkCoord.getChunkZ() - scanDistance));
+                                                topEdgeFound = true;
+                                                break;
                                             }
-                                            if (canSpawnHere) continue;
-                                            topEdgeFound = true;
+                                            if (!topEdgeFound) {
+                                                ++top;
+                                            }
                                         }
-                                        if (topEdgeFound) continue;
-                                        ++top;
                                     }
                                 } else {
                                     left = (int)Math.ceil((double)((Integer)topLeftAndLowerRightChunkCoordinates2[3] + (Integer)topLeftAndLowerRightChunkCoordinates2[1]) / 2.0);
@@ -654,21 +476,14 @@ public class CustomStructurePlotter {
                                 BO4CustomStructure bO4CustomStructure = new BO4CustomStructure(world, bO4CustomStructureCoordinate, spawningStructureAtSpawn, targetBiomes, chunkCoord);
                                 if (!bO4CustomStructure.IsSpawned) continue block16;
                                 structureCache.addBo4ToStructureCache(spawnChunk, bO4CustomStructure);
-                                CACHE_LOCK.lock();
-                                try { ++((BO4)bO4CustomStructureCoordinate.getObject()).getConfig().timesSpawned; } finally { CACHE_LOCK.unlock(); }
+                                ++((BO4)bO4CustomStructureCoordinate.getObject()).getConfig().timesSpawned;
                                 if (OTG.getPluginConfig().spawnLog) {
                                     OTG.log(LogMarker.INFO, "Plotted structure " + bO4CustomStructureCoordinate.getObject().getName() + " at chunk " + spawnCoordX + " " + spawnCoordZ + " (" + spawnCoordX * 16 + " 100 " + spawnCoordZ * 16 + ")", new Object[0]);
                                 }
-                                CACHE_LOCK.lock();
-                                try {
                                 if (((BO4)currentStructureSpawning[0]).getConfig().frequency > 0 || ((BO4)currentStructureSpawning[0]).getConfig().bo4Groups.size() > 0) {
                                     String bO3Name = ((BO4)currentStructureSpawning[0]).getName();
                                     ChunkCoordinate bo4SpawnCoord = ChunkCoordinate.fromChunkCoords(spawnCoordX, spawnCoordZ);
-                                    ArrayList<ChunkCoordinate> chunkCoords = this.spawnedStructuresByName.get(bO3Name);
-                                    if (chunkCoords == null) {
-                                        chunkCoords = new ArrayList();
-                                        this.spawnedStructuresByName.put(bO3Name, chunkCoords);
-                                    }
+                                    java.util.List<ChunkCoordinate> chunkCoords = this.spawnedStructuresByName.computeIfAbsent(bO3Name, k -> new java.util.concurrent.CopyOnWriteArrayList<>());
                                     chunkCoords.add(bo4SpawnCoord);
                                     if (((BO4)currentStructureSpawning[0]).getConfig().bo4Groups.size() > 0) {
                                         int structureCenterX = structureBBInsideAreaX + (int)Math.floor((double)(rotation == Rotation.NORTH || rotation == Rotation.SOUTH ? structureLeft + structureRight + 1 : structureBottom + structureTop + 1) / 2.0);
@@ -678,28 +493,13 @@ public class CustomStructurePlotter {
                                             String bo4GroupName = entry.getKey();
                                             int bo4GroupFrequency = entry.getValue();
                                             if (bo4GroupFrequency <= 0) continue;
-                                            HashMap<ChunkCoordinate, Integer> spawnedStructures = this.spawnedStructuresByGroup.get(bo4GroupName);
-                                            if (spawnedStructures == null) {
-                                                spawnedStructures = new HashMap();
-                                                spawnedStructures.put(bo4CenterSpawnCoord, entry.getValue());
-                                                this.spawnedStructuresByGroup.put(bo4GroupName, spawnedStructures);
-                                                continue;
-                                            }
-                                            Integer frequency = spawnedStructures.get(bo4CenterSpawnCoord);
-                                            if (frequency != null) {
-                                                if (frequency >= bo4GroupFrequency) continue;
-                                                spawnedStructures.put(bo4CenterSpawnCoord, (int)entry.getValue());
-                                                continue;
-                                            }
-                                            spawnedStructures.put(bo4CenterSpawnCoord, (int)entry.getValue());
+                                            java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, Integer> spawnedStructures = this.spawnedStructuresByGroup.computeIfAbsent(bo4GroupName, k -> new java.util.concurrent.ConcurrentHashMap<>());
+                                            spawnedStructures.merge(bo4CenterSpawnCoord, (int) entry.getValue(), Math::max);
                                         }
                                     }
                                 }
-                                } finally {
-                                    CACHE_LOCK.unlock();
-                                }
                                 if (!this.structureCacheContainsKey(chunkCoord) && targetStructure == null) continue block16;
-                                                        return bO4CustomStructure;
+                                return bO4CustomStructure;
                             }
                         }
                     }
@@ -712,48 +512,41 @@ public class CustomStructurePlotter {
     }
 
     private boolean chunkHasDefaultStructureSafe(LocalWorld world, Random rand, ChunkCoordinate chunkCoord) {
-        com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.lock();
-        try {
-            return world.chunkHasDefaultStructure(rand, chunkCoord);
-        } finally {
-            com.cleanroommc.worldflow.pipeline.compat.WorldGenSafety.UNSAFE_WORLDGEN_LOCK.unlock();
-        }
+        return world.chunkHasDefaultStructure(rand, chunkCoord);
     }
 
     private boolean isBO4AllowedToSpawnAtByFrequency(ChunkCoordinate chunkCoord, BO4 BO3ToSpawn) {
-        CACHE_LOCK.lock();
-        try { return isBO4AllowedToSpawnAtByFrequency0(chunkCoord, BO3ToSpawn); } finally { CACHE_LOCK.unlock(); }
-    }
-
-    private boolean isBO4AllowedToSpawnAtByFrequency0(ChunkCoordinate chunkCoord, BO4 BO3ToSpawn) {
-        float distanceBetweenStructures;
         int radius = BO3ToSpawn.getConfig().frequency;
         String bO3Name = BO3ToSpawn.getName();
+        int cx = chunkCoord.getChunkX();
+        int cz = chunkCoord.getChunkZ();
         if (radius > 0) {
-            distanceBetweenStructures = 0.0f;
-            ArrayList<ChunkCoordinate> chunkCoords = this.spawnedStructuresByName.get(bO3Name);
+            long limitSq = (long) (radius + 1) * (radius + 1);
+            java.util.List<ChunkCoordinate> chunkCoords = this.spawnedStructuresByName.get(bO3Name);
             if (chunkCoords != null) {
                 for (ChunkCoordinate cachedChunk : chunkCoords) {
-                    distanceBetweenStructures = (int)Math.floor(Math.sqrt(Math.pow(chunkCoord.getChunkX() - cachedChunk.getChunkX(), 2.0) + Math.pow(chunkCoord.getChunkZ() - cachedChunk.getChunkZ(), 2.0)));
-                    if (!(distanceBetweenStructures <= (float)radius)) continue;
-                    return false;
+                    long dx = cx - cachedChunk.getChunkX();
+                    long dz = cz - cachedChunk.getChunkZ();
+                    if (dx * dx + dz * dz < limitSq) {
+                        return false;
+                    }
                 }
             }
         }
         if (BO3ToSpawn.getConfig().bo4Groups.size() > 0) {
-            distanceBetweenStructures = 0.0f;
-            int cachedChunkRadius = 0;
-            ChunkCoordinate cachedChunk = null;
             for (Map.Entry<String, Integer> entry : BO3ToSpawn.getConfig().bo4Groups.entrySet()) {
-                HashMap<ChunkCoordinate, Integer> spawnedStructure = this.spawnedStructuresByGroup.get(entry.getKey());
+                java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, Integer> spawnedStructure = this.spawnedStructuresByGroup.get(entry.getKey());
                 if (spawnedStructure == null) continue;
+                int groupRadius = entry.getValue();
                 for (Map.Entry<ChunkCoordinate, Integer> cachedChunkEntry : spawnedStructure.entrySet()) {
-                    cachedChunk = cachedChunkEntry.getKey();
-                    cachedChunkRadius = cachedChunkEntry.getValue();
-                    int n = radius = entry.getValue() >= cachedChunkRadius ? entry.getValue() : cachedChunkRadius;
-                    distanceBetweenStructures = (int)Math.floor(Math.sqrt(Math.pow(chunkCoord.getChunkX() - cachedChunk.getChunkX(), 2.0) + Math.pow(chunkCoord.getChunkZ() - cachedChunk.getChunkZ(), 2.0)));
-                    if (!(distanceBetweenStructures <= (float)radius)) continue;
-                    return false;
+                    ChunkCoordinate cachedChunk = cachedChunkEntry.getKey();
+                    int effectiveRadius = Math.max(groupRadius, cachedChunkEntry.getValue());
+                    long limitSq = (long) (effectiveRadius + 1) * (effectiveRadius + 1);
+                    long dx = cx - cachedChunk.getChunkX();
+                    long dz = cz - cachedChunk.getChunkZ();
+                    if (dx * dx + dz * dz < limitSq) {
+                        return false;
+                    }
                 }
             }
         }
@@ -770,11 +563,29 @@ public class CustomStructurePlotter {
     }
 
     public void saveSpawnedStructures(LocalWorld world) {
-        CustomStructureFileManager.saveChunksMapFile(world, this.spawnedStructuresByName, this.spawnedStructuresByGroup);
+        HashMap<String, ArrayList<ChunkCoordinate>> byName = new HashMap<>();
+        for (Map.Entry<String, java.util.List<ChunkCoordinate>> e : this.spawnedStructuresByName.entrySet()) {
+            byName.put(e.getKey(), new ArrayList<>(e.getValue()));
+        }
+        HashMap<String, HashMap<ChunkCoordinate, Integer>> byGroup = new HashMap<>();
+        for (Map.Entry<String, java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, Integer>> e : this.spawnedStructuresByGroup.entrySet()) {
+            byGroup.put(e.getKey(), new HashMap<>(e.getValue()));
+        }
+        CustomStructureFileManager.saveChunksMapFile(world, byName, byGroup);
     }
 
     public void loadSpawnedStructures(LocalWorld world) {
-        CustomStructureFileManager.loadChunksMapFile(world, this.spawnedStructuresByName, this.spawnedStructuresByGroup);
+        HashMap<String, ArrayList<ChunkCoordinate>> byName = new HashMap<>();
+        HashMap<String, HashMap<ChunkCoordinate, Integer>> byGroup = new HashMap<>();
+        CustomStructureFileManager.loadChunksMapFile(world, byName, byGroup);
+        this.spawnedStructuresByName.clear();
+        for (Map.Entry<String, ArrayList<ChunkCoordinate>> e : byName.entrySet()) {
+            this.spawnedStructuresByName.put(e.getKey(), new java.util.concurrent.CopyOnWriteArrayList<>(e.getValue()));
+        }
+        this.spawnedStructuresByGroup.clear();
+        for (Map.Entry<String, HashMap<ChunkCoordinate, Integer>> e : byGroup.entrySet()) {
+            this.spawnedStructuresByGroup.put(e.getKey(), new java.util.concurrent.ConcurrentHashMap<>(e.getValue()));
+        }
     }
 
     public void saveStructureCache(LocalWorld world) {

@@ -28,6 +28,17 @@ public class CompatRegistry {
         registerPackage("cofh.", GeneratorSafetyLevel.PARALLEL_SAFE);
         registerPackage("forestry.", GeneratorSafetyLevel.PARALLEL_SAFE);
         registerPackage("biomesoplenty.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("svenhjol.charm.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("snownee.snow.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("artifacts.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("com.sofodev.armorplus.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("cd4017be.dimstack.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("com.lycanitesmobs.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("mod.mcreator.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("atomicstryker.infernalmobs.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("rustic.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("defiledlands.", GeneratorSafetyLevel.PARALLEL_SAFE);
+        registerPackage("com.shinoow.defiledlands.", GeneratorSafetyLevel.PARALLEL_SAFE);
 
         // Serialize: multi-chunk complex structures with global cache or shared RNG state.
         // NOTE ON OTG/DREGORA: Base terrain (ChunkProviderOTG / ForgeChunkBuffer) runs FULLY PARALLEL via

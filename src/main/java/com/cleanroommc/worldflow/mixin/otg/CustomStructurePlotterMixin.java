@@ -10,6 +10,7 @@ public abstract class CustomStructurePlotterMixin {
 
     @Redirect(method = "plotStructures(Lcom/pg85/otg/customobjects/structures/CustomStructureCache;Lcom/pg85/otg/customobjects/bo4/BO4;Ljava/util/ArrayList;Lcom/pg85/otg/common/LocalWorld;Ljava/util/Random;Lcom/pg85/otg/util/ChunkCoordinate;Z)Lcom/pg85/otg/customobjects/structures/bo4/BO4CustomStructure;",
               at = @At(value = "INVOKE", target = "Ljava/lang/Thread;sleep(J)V"),
+              require = 0,
               remap = false)
     private void worldflow$onPlotterSleep(long millis) {
         // Never sleep 20ms in plotStructures! Yield execution instead to eliminate 20ms spin-wait.

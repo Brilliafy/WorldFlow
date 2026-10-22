@@ -2,6 +2,7 @@ package com.cleanroommc.worldflow.mixin.otg;
 
 import com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView;
 import com.cleanroommc.worldflow.pipeline.isolation.WorkerGeneratorContext;
+import com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext;
 import com.pg85.otg.common.LocalBiome;
 import com.pg85.otg.forge.biomes.ForgeBiome;
 import com.pg85.otg.forge.generator.ForgeChunkBuffer;
@@ -100,38 +101,20 @@ public abstract class ForgeWorldMixin {
 
     @Inject(method = "getCalculatedBiome", at = @At("HEAD"), cancellable = true, remap = false)
     private void worldflow$onGetCalculatedBiome(int x, int z, CallbackInfoReturnable<LocalBiome> cir) {
-        // Biome is a pure function of (x, z) for a given world: cache per worker so the global
-        // biomeGenerator lock is only taken on a miss. This lock was taken for every biome
-        // lookup and serialised all decoration workers.
-        long cacheKey = ((long) x << 32) ^ (z & 0xffffffffL);
-        java.util.HashMap<Long, LocalBiome> cache = WORLD_FLOW_BIOME_CACHE.get();
-        LocalBiome cached = cache.get(cacheKey);
-        if (cached != null) {
-            cir.setReturnValue(cached);
-            return;
+        ForgeWorld self = (ForgeWorld) (Object) this;
+        short[] chunkBiomes = OTGParallelContext.getChunkOTGBiomes(self, x >> 4, z >> 4);
+        if (chunkBiomes != null) {
+            int otgId = chunkBiomes[(z & 15) * 16 + (x & 15)] & 0xFFFF;
+            LocalBiome b = self.getBiomeByOTGIdOrNull(otgId);
+            if (b != null) {
+                cir.setReturnValue(b);
+                return;
+            }
         }
 
-        ForgeWorld self = (ForgeWorld) (Object) this;
-        LocalBiome biome = null;
-        if (this.biomeGenerator != null) {
-            try {
-                int biomeId;
-                synchronized (this.biomeGenerator) {
-                    biomeId = this.biomeGenerator.getBiome(x, z);
-                }
-                biome = self.getBiomeByOTGIdOrNull(biomeId);
-            } catch (Throwable ignored) {
-            }
-        }
-        if (biome == null) {
-            biome = worldflow$getFallbackBiome(self);
-        }
-        if (biome != null) {
-            if (cache.size() >= WORLD_FLOW_BIOME_CACHE_MAX) {
-                cache.clear();
-            }
-            cache.put(cacheKey, biome);
-            cir.setReturnValue(biome);
+        LocalBiome fallback = worldflow$getFallbackBiome(self);
+        if (fallback != null) {
+            cir.setReturnValue(fallback);
         }
     }
 
@@ -145,15 +128,35 @@ public abstract class ForgeWorldMixin {
         com.cleanroommc.worldflow.pipeline.isolation.PopulationBiomeCache cache =
                 com.cleanroommc.worldflow.pipeline.isolation.PopulationBiomeCache.get();
         cache.chunkCoord = chunkCoord;
-        int startX = chunkCoord.getBlockX();
-        int startZ = chunkCoord.getBlockZ();
-        for (int x = 0; x < 32; x++) {
-            for (int z = 0; z < 32; z++) {
-                LocalBiome b = self.getBiome(startX + x, startZ + z);
-                if (b == null) {
-                    b = worldflow$getFallbackBiome(self);
+        int cx = chunkCoord.getChunkX();
+        int cz = chunkCoord.getChunkZ();
+
+        short[] arr0 = OTGParallelContext.getChunkOTGBiomes(self, cx, cz);
+        short[] arr1 = OTGParallelContext.getChunkOTGBiomes(self, cx + 1, cz);
+        short[] arr2 = OTGParallelContext.getChunkOTGBiomes(self, cx, cz + 1);
+        short[] arr3 = OTGParallelContext.getChunkOTGBiomes(self, cx + 1, cz + 1);
+
+        LocalBiome fallback = null;
+        for (int subZ = 0; subZ < 16; subZ++) {
+            for (int subX = 0; subX < 16; subX++) {
+                int idx = subZ * 16 + subX;
+                LocalBiome b0 = arr0 != null ? self.getBiomeByOTGIdOrNull(arr0[idx] & 0xFFFF) : null;
+                LocalBiome b1 = arr1 != null ? self.getBiomeByOTGIdOrNull(arr1[idx] & 0xFFFF) : null;
+                LocalBiome b2 = arr2 != null ? self.getBiomeByOTGIdOrNull(arr2[idx] & 0xFFFF) : null;
+                LocalBiome b3 = arr3 != null ? self.getBiomeByOTGIdOrNull(arr3[idx] & 0xFFFF) : null;
+
+                if (b0 == null || b1 == null || b2 == null || b3 == null) {
+                    if (fallback == null) fallback = worldflow$getFallbackBiome(self);
+                    if (b0 == null) b0 = fallback;
+                    if (b1 == null) b1 = fallback;
+                    if (b2 == null) b2 = fallback;
+                    if (b3 == null) b3 = fallback;
                 }
-                cache.biomes[x][z] = b;
+
+                cache.biomes[subX][subZ] = b0;
+                cache.biomes[subX + 16][subZ] = b1;
+                cache.biomes[subX][subZ + 16] = b2;
+                cache.biomes[subX + 16][subZ + 16] = b3;
             }
         }
         cache.valid = true;

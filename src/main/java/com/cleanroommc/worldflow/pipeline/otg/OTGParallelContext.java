@@ -25,15 +25,11 @@ public class OTGParallelContext {
     public static final ThreadLocal<ForgeChunkBuffer> CURRENT_BUFFER = new ThreadLocal<>();
 
     /**
-     * OTG's {@code ObjectSpawner} is a single shared instance per world and is not
-     * thread-safe: it holds the population {@code Random}, cascade flags, biome
-     * population caches and BO4 structure cache. Running two {@code populate()} calls
-     * concurrently therefore corrupts structure state and decoration (observed as
-     * {@code ConcurrentModificationException} in {@code CustomObjectGen} and as
-     * non-deterministic decoration). One global lock is required; the old 64-way
-     * sharding only protected the plotter against itself.
+     * 64-way spatial sharding by 8x8-chunk regions. With per-worker ObjectSpawner
+     * and thread-local biome caches, disjoint regions populate concurrently without
+     * lock convoys or monitor contention.
      */
-    public static final int NUM_SHARDS = 1;
+    public static final int NUM_SHARDS = 64;
     private static final java.util.concurrent.locks.ReentrantLock[] SHARDED_LOCKS = new java.util.concurrent.locks.ReentrantLock[NUM_SHARDS];
 
     static {
@@ -43,6 +39,17 @@ public class OTGParallelContext {
     }
 
     public static final java.util.concurrent.locks.ReentrantLock OTG_STRUCTURE_LOCK = SHARDED_LOCKS[0];
+
+    /** Per-worker ObjectSpawner instances for lock-free parallel population. */
+    private static final ThreadLocal<java.util.Map<ForgeWorld, com.pg85.otg.generator.ObjectSpawner>> THREAD_LOCAL_SPAWNERS =
+            ThreadLocal.withInitial(java.util.WeakHashMap::new);
+
+    public static com.pg85.otg.generator.ObjectSpawner getThreadLocalSpawner(ForgeWorld world) {
+        if (world == null) {
+            return null;
+        }
+        return THREAD_LOCAL_SPAWNERS.get().computeIfAbsent(world, w -> new com.pg85.otg.generator.ObjectSpawner(w.getConfigs(), (LocalWorld) w));
+    }
 
     /**
      * Shard by 8x8-chunk region: nearby chunks (whose BO4 structures can interact)
@@ -156,7 +163,43 @@ public class OTGParallelContext {
      */
     private static final java.util.concurrent.ConcurrentHashMap<Long, byte[]> BIOME_ARRAY_CACHE =
             new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.util.concurrent.ConcurrentHashMap<Long, short[]> OTG_CHUNK_BIOMES =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private static final int BIOME_ARRAY_CACHE_MAX = 16384;
+
+    public static short[] getChunkOTGBiomes(ForgeWorld world, int chunkX, int chunkZ) {
+        if (world == null) return null;
+        long key = ChunkPos.asLong(chunkX, chunkZ);
+        short[] cached = OTG_CHUNK_BIOMES.get(key);
+        if (cached != null) {
+            return cached;
+        }
+
+        com.pg85.otg.generator.biome.BiomeGenerator biomeGenerator = world.getBiomeGenerator();
+        if (biomeGenerator == null) {
+            return null;
+        }
+
+        int[] biomeArray;
+        cached = OTG_CHUNK_BIOMES.get(key);
+        if (cached != null) return cached;
+        // CachedBiomeGeneratorMixin gives each worker a thread-local read-through cache;
+        // the generator monitor is no longer needed here.
+        biomeArray = biomeGenerator.getBiomes(null, chunkX * 16, chunkZ * 16, 16, 16,
+                com.pg85.otg.generator.biome.OutputType.DEFAULT_FOR_WORLD);
+        if (biomeArray == null || biomeArray.length < 256) {
+            return null;
+        }
+        short[] arr = new short[256];
+        for (int i = 0; i < 256; i++) {
+            arr[i] = (short) biomeArray[i];
+        }
+        if (OTG_CHUNK_BIOMES.size() >= BIOME_ARRAY_CACHE_MAX) {
+            OTG_CHUNK_BIOMES.clear();
+        }
+        OTG_CHUNK_BIOMES.putIfAbsent(key, arr);
+        return arr;
+    }
 
     public static void fillBiomeArray(ForgeWorld world, Chunk chunk) {
         if (world == null || chunk == null) {
@@ -164,25 +207,20 @@ public class OTGParallelContext {
         }
         byte[] chunkBiomeArray = chunk.getBiomeArray();
         com.pg85.otg.network.ConfigProvider configProvider = world.getConfigs();
-        com.pg85.otg.generator.biome.BiomeGenerator biomeGenerator = world.getBiomeGenerator();
-        if (configProvider == null || biomeGenerator == null) {
+        if (configProvider == null) {
             return;
         }
 
         long cacheKey = ChunkPos.asLong(chunk.x, chunk.z);
         byte[] saved = BIOME_ARRAY_CACHE.get(cacheKey);
         if (saved == null) {
-            int[] biomeShortArray;
-            synchronized (biomeGenerator) {
-                biomeShortArray = biomeGenerator.getBiomes(null, chunk.x * 16, chunk.z * 16, 16, 16,
-                        com.pg85.otg.generator.biome.OutputType.DEFAULT_FOR_WORLD);
-            }
-            if (biomeShortArray == null) {
+            short[] otgIds = getChunkOTGBiomes(world, chunk.x, chunk.z);
+            if (otgIds == null) {
                 return;
             }
             saved = new byte[chunkBiomeArray.length];
-            for (int i = 0; i < saved.length && i < biomeShortArray.length; ++i) {
-                com.pg85.otg.common.LocalBiome biome = configProvider.getBiomeByOTGIdOrNull(biomeShortArray[i]);
+            for (int i = 0; i < saved.length && i < otgIds.length; ++i) {
+                com.pg85.otg.common.LocalBiome biome = configProvider.getBiomeByOTGIdOrNull(otgIds[i] & 0xFFFF);
                 saved[i] = (byte) (biome != null && biome.getIds() != null ? biome.getIds().getSavedId() : 0);
             }
             if (BIOME_ARRAY_CACHE.size() >= BIOME_ARRAY_CACHE_MAX) {

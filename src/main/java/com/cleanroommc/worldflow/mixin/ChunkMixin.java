@@ -72,6 +72,25 @@ public abstract class ChunkMixin implements IWorldFlowChunk {
     @Final
     private World world;
 
+    @Inject(method = "removeTileEntity(Lnet/minecraft/util/math/BlockPos;)V", at = @At("HEAD"), cancellable = true)
+    private void worldflow$onRemoveTileEntity(net.minecraft.util.math.BlockPos pos, CallbackInfo ci) {
+        Chunk self = (Chunk) (Object) this;
+        if (!self.isLoaded()) {
+            net.minecraft.tileentity.TileEntity te = self.getTileEntityMap().remove(pos);
+            if (te != null) {
+                te.invalidate();
+            }
+            net.minecraft.block.state.IBlockState state = self.getBlockState(pos);
+            if (state.getBlock() == net.minecraft.init.Blocks.MOB_SPAWNER) {
+                net.minecraft.tileentity.TileEntity spawner = state.getBlock().createTileEntity(this.world, state);
+                if (spawner != null) {
+                    self.addTileEntity(pos, spawner);
+                }
+            }
+            ci.cancel();
+        }
+    }
+
     @Inject(method = "addTileEntity(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/tileentity/TileEntity;)V",
             at = @At("HEAD"),
             cancellable = true)

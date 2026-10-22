@@ -32,13 +32,23 @@ public abstract class ForgeWorldHeightMixin {
         ForgeWorld self = (ForgeWorld) (Object) this;
         Chunk chunk = null;
         if (chunkBeingPopulated != null && com.pg85.otg.OTG.IsInAreaBeingPopulated(x, z, chunkBeingPopulated)) {
-            chunk = self.getChunkGenerator().getChunk(x, z);
+            if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+                chunk = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunk(self.getWorld(), x >> 4, z >> 4);
+            }
+            if (chunk == null) {
+                chunk = self.getChunkGenerator().getChunk(x, z);
+            }
         }
         if (chunk == null && chunkBeingPopulated == null) {
-            if (self.getWorld().isBlockLoaded(new BlockPos(x, 255, z))) {
-                chunk = self.getChunkGenerator().getChunk(x, z);
-            } else {
-                return self.getChunkGenerator().getHighestBlockYInUnloadedChunk(x, z, findSolid, findLiquid, ignoreLiquid, ignoreSnow);
+            if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+                chunk = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunk(self.getWorld(), x >> 4, z >> 4);
+            }
+            if (chunk == null) {
+                if (self.getWorld().isBlockLoaded(new BlockPos(x, 255, z))) {
+                    chunk = self.getChunkGenerator().getChunk(x, z);
+                } else {
+                    return self.getChunkGenerator().getHighestBlockYInUnloadedChunk(x, z, findSolid, findLiquid, ignoreLiquid, ignoreSnow);
+                }
             }
         }
         if (chunk == null) {
@@ -55,7 +65,7 @@ public abstract class ForgeWorldHeightMixin {
             heightMapy++;
             incorrectHeightMap = true;
         }
-        if (incorrectHeightMap) {
+        if (incorrectHeightMap && !com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
             self.getWorld().checkLight(new BlockPos(x, heightMapy, z));
         }
 
@@ -80,5 +90,41 @@ public abstract class ForgeWorldHeightMixin {
             }
         }
         return -1;
+    }
+
+    @Overwrite(remap = false)
+    public int getHeightMapHeight(int x, int z, ChunkCoordinate chunkBeingPopulated) {
+        ForgeWorld self = (ForgeWorld) (Object) this;
+        Chunk chunk = null;
+        if (chunkBeingPopulated != null && com.pg85.otg.OTG.IsInAreaBeingPopulated(x, z, chunkBeingPopulated)) {
+            if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+                chunk = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunk(self.getWorld(), x >> 4, z >> 4);
+            }
+            if (chunk == null) {
+                chunk = self.getChunkGenerator().getChunk(x, z);
+            }
+        }
+        if (chunk == null && chunkBeingPopulated == null) {
+            if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()) {
+                chunk = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunk(self.getWorld(), x >> 4, z >> 4);
+            }
+            if (chunk == null) {
+                if (self.getWorld().isBlockLoaded(new BlockPos(x, 255, z))) {
+                    chunk = self.getChunkGenerator().getChunk(x, z);
+                } else {
+                    return -1;
+                }
+            }
+        }
+        if (chunk == null) {
+            return -1;
+        }
+        int internalX = x & 0xF;
+        int internalZ = z & 0xF;
+        int heightMapy = chunk.getHeightValue(internalX, internalZ);
+        while (heightMapy < self.getHeightCap() && chunk.getBlockState(internalX, heightMapy, internalZ).getMaterial().blocksLight()) {
+            heightMapy++;
+        }
+        return heightMapy;
     }
 }

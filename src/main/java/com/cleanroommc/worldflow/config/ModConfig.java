@@ -32,7 +32,7 @@ public class ModConfig {
         public boolean enableParallelGeneration = false;
 
         @Config.Comment("Number of parallel worker threads for chunk generation (0 = auto: CPU cores - 1).")
-        @Config.RangeInt(min = 0, max = 64)
+        @Config.RangeInt(min = 0, max = 256)
         @Config.Name("Parallel Worker Threads")
         public int parallelWorkerThreads = 0;
 
