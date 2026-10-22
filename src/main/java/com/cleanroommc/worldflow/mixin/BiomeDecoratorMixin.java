@@ -13,7 +13,10 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
+import com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.Random;
 
 @Mixin(BiomeDecorator.class)
@@ -54,6 +57,35 @@ public abstract class BiomeDecoratorMixin {
     @Unique
     private boolean worldflow$gensReady;
 
+    @Unique
+    private final ThreadLocal<BiomeDecorator> worldflow$localDecorator = new ThreadLocal<>();
+
+    @Unique
+    private static final ThreadLocal<Boolean> WORLDFLOW_DELEGATING = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    @Unique
+    private BiomeDecorator worldflow$cloneDecorator() {
+        try {
+            java.lang.reflect.Constructor<?> constructor = this.getClass().getDeclaredConstructor();
+            constructor.setAccessible(true);
+            BiomeDecorator clone = (BiomeDecorator) constructor.newInstance();
+            for (Class<?> c = this.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                for (Field field : c.getDeclaredFields()) {
+                    if (Modifier.isStatic(field.getModifiers())) continue;
+                    if (field.getType() == ThreadLocal.class) continue;
+                    try {
+                        field.setAccessible(true);
+                        field.set(clone, field.get(this));
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            return clone;
+        } catch (Throwable ignored) {
+            return new BiomeDecorator();
+        }
+    }
+
     @Shadow
     public WorldGenerator lapisGen;
 
@@ -67,7 +99,25 @@ public abstract class BiomeDecoratorMixin {
      */
     @Overwrite
     public void decorate(World worldIn, Random random, Biome biome, BlockPos pos) {
-        synchronized (this) {
+        // Feature workers own a private clone of this decorator. No monitor is needed:
+        // chunkPos, decorating, generator selection and RNG all stay thread-confined.
+        if (ThreadLocalWorldView.isGenerating() && !WORLDFLOW_DELEGATING.get()) {
+            BiomeDecorator local = this.worldflow$localDecorator.get();
+            if (local == null) {
+                local = this.worldflow$cloneDecorator();
+                this.worldflow$localDecorator.set(local);
+            }
+            if (local != (BiomeDecorator) (Object) this) {
+                WORLDFLOW_DELEGATING.set(Boolean.TRUE);
+                try {
+                    local.decorate(worldIn, random, biome, pos);
+                } finally {
+                    WORLDFLOW_DELEGATING.set(Boolean.FALSE);
+                }
+                return;
+            }
+        }
+        {
             if (this.decorating) {
                 return;
             }

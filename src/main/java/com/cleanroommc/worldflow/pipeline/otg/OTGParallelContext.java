@@ -24,22 +24,6 @@ public class OTGParallelContext {
     /** Per-worker buffer currently used by the parallel OTG terrain path. */
     public static final ThreadLocal<ForgeChunkBuffer> CURRENT_BUFFER = new ThreadLocal<>();
 
-    /**
-     * 64-way spatial sharding by 8x8-chunk regions. With per-worker ObjectSpawner
-     * and thread-local biome caches, disjoint regions populate concurrently without
-     * lock convoys or monitor contention.
-     */
-    public static final int NUM_SHARDS = 64;
-    private static final java.util.concurrent.locks.ReentrantLock[] SHARDED_LOCKS = new java.util.concurrent.locks.ReentrantLock[NUM_SHARDS];
-
-    static {
-        for (int i = 0; i < NUM_SHARDS; i++) {
-            SHARDED_LOCKS[i] = new java.util.concurrent.locks.ReentrantLock();
-        }
-    }
-
-    public static final java.util.concurrent.locks.ReentrantLock OTG_STRUCTURE_LOCK = SHARDED_LOCKS[0];
-
     /** Per-worker ObjectSpawner instances for lock-free parallel population. */
     private static final ThreadLocal<java.util.Map<ForgeWorld, com.pg85.otg.generator.ObjectSpawner>> THREAD_LOCAL_SPAWNERS =
             ThreadLocal.withInitial(java.util.WeakHashMap::new);
@@ -48,44 +32,10 @@ public class OTGParallelContext {
         if (world == null) {
             return null;
         }
-        return THREAD_LOCAL_SPAWNERS.get().computeIfAbsent(world, w -> new com.pg85.otg.generator.ObjectSpawner(w.getConfigs(), (LocalWorld) w));
+        return THREAD_LOCAL_SPAWNERS.get().computeIfAbsent(world,
+                w -> new com.pg85.otg.generator.ObjectSpawner(w.getConfigs(), (LocalWorld) w));
     }
 
-    /**
-     * Shard by 8x8-chunk region: nearby chunks (whose BO4 structures can interact)
-     * stay serialized, while distant regions populate in parallel. Each worker owns a
-     * private ObjectSpawner (rand + cascade flags) and a thread-local biome cache.
-     */
-    public static java.util.concurrent.locks.ReentrantLock getStructureLock(int chunkX, int chunkZ) {
-        int regionX = chunkX >> 3;
-        int regionZ = chunkZ >> 3;
-        int hash = ((regionX * 31) ^ regionZ) & (NUM_SHARDS - 1);
-        return SHARDED_LOCKS[hash];
-    }
-
-    public static boolean tryLockAll(long timeout, java.util.concurrent.TimeUnit unit) throws InterruptedException {
-        long deadline = System.nanoTime() + unit.toNanos(timeout);
-        int acquired = 0;
-        for (int i = 0; i < NUM_SHARDS; i++) {
-            long remaining = deadline - System.nanoTime();
-            if (remaining <= 0 || !SHARDED_LOCKS[i].tryLock(remaining, java.util.concurrent.TimeUnit.NANOSECONDS)) {
-                for (int j = 0; j < acquired; j++) {
-                    SHARDED_LOCKS[j].unlock();
-                }
-                return false;
-            }
-            acquired++;
-        }
-        return true;
-    }
-
-    public static void unlockAll() {
-        for (int i = 0; i < NUM_SHARDS; i++) {
-            if (SHARDED_LOCKS[i].isHeldByCurrentThread()) {
-                SHARDED_LOCKS[i].unlock();
-            }
-        }
-    }
     private static final ThreadLocal<java.util.Map<Integer, ChunkProviderOTG>> THREAD_LOCAL_PROVIDERS = ThreadLocal.withInitial(java.util.HashMap::new);
     private static Constructor<ForgeChunkBuffer> bufferConstructor;
     private static Method toChunkMethod;

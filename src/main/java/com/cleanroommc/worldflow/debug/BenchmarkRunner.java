@@ -67,11 +67,10 @@ public class BenchmarkRunner {
                 long startGuardsBlocked = GenerationScheduler.getInstance().getGuardsBlockedCount();
                 Map<String, Long> startGenCounts = GenerationScheduler.getInstance().getSerializedGeneratorCountsSnapshot();
 
-                // Keep the benchmark window at roughly one target per worker. The old
-                // config cap (96) admitted several 3x3 dependency rings at once; the
-                // carver cache then thrashed and G1 promoted thousands of transient chunks.
-                int configuredInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
-                int maxInFlight = Math.min(configuredInFlight, Math.max(32, workers > 0 ? workers : 32));
+                // 128-chunk wavefront: four stride phases x 32 workers of headroom.
+                // The old 48-chunk cap starved feature workers and limited CPU to ~10 cores.
+                int maxInFlight = 128;
+                GenerationScheduler.getInstance().setMaxInFlightWindow(maxInFlight);
                 List<BenchChunkEntry> entries = new CopyOnWriteArrayList<>();
 
                 // Timeout at 3x expected duration (minimum 60s)

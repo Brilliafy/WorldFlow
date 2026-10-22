@@ -20,10 +20,6 @@ public class OTGStructureService {
 
     public static final String THREAD_NAME = "WorldFlow-Structures";
 
-    /** Plots take the write lock; BO4 spawns take the read lock (parallel readers). */
-    public static final java.util.concurrent.locks.ReentrantLock STRUCTURE_CACHE_LOCK =
-            new java.util.concurrent.locks.ReentrantLock();
-
     /** Wall time spent waiting for the structure executor (contention indicator). */
     public static final java.util.concurrent.atomic.AtomicLong TOTAL_WAIT_NANOS = new java.util.concurrent.atomic.AtomicLong();
     /** Time the plot itself took on the structure thread. */
@@ -108,9 +104,15 @@ public class OTGStructureService {
             java.util.Set<Long> plotted = plottedSet(cache);
             for (ChunkCoordinate c : coords) {
                 long k = net.minecraft.util.math.ChunkPos.asLong(c.getChunkX(), c.getChunkZ());
-                if (plotted.contains(k)) continue;
-                cache.plotBo4Structures(rand, c);
-                plotted.add(k);
+                // Atomic claim, not check-then-act. Adjacent chunks request the same
+                // neighbour plot; only one worker may run plotStructures for a coordinate.
+                if (!plotted.add(k)) continue;
+                try {
+                    cache.plotBo4Structures(rand, c);
+                } catch (Throwable t) {
+                    plotted.remove(k);
+                    throw t;
+                }
             }
         } finally {
             TOTAL_WORK_NANOS.addAndGet(System.nanoTime() - workStart);

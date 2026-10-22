@@ -22,6 +22,8 @@
     "MapGenBaseAccessor",
     "MapGenStructureConcurrencyMixin",
     "MapGenStructureLocklessMixin",
+    "MapGenStructureAccessor",
+    "MapGenStructureNbtStagingMixin",
     "MapGenStructureDataMixin",
     "StructureStartMixin",
     "WorldEntitySpawnerMixin",

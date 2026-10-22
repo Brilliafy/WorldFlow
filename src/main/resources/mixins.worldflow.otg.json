@@ -26,7 +26,6 @@
     "ForgeWorldMaterialMixin",
     "CustomObjectGenMixin",
     "CustomObjectCollectionCacheMixin",
-    "ResourceLockMixin",
     "TreeGenStateMixin",
     "OTGEngineEventMixin",
     "CustomStructureCacheAccessMixin",

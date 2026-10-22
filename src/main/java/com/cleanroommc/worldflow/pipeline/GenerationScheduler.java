@@ -31,7 +31,6 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Coordinates staged chunk generation dependencies, dedicated worker pool execution,
@@ -46,8 +45,8 @@ public class GenerationScheduler {
     private final Map<Long, StatusHolder> pendingRequests = new ConcurrentHashMap<>();
     private final Map<Long, ProtoChunk> carverCache = new ConcurrentHashMap<>();
     private final Queue<Long> carverCacheOrder = new ConcurrentLinkedQueue<>();
-    private static final int CARVER_CACHE_LIMIT = 512;
-    private final Map<IWorldGenerator, ReentrantLock> generatorLocks = new ConcurrentHashMap<>();
+    private static final int CARVER_CACHE_LIMIT = 1024;
+    private volatile int maxInFlightWindow = -1;
     private static final ThreadLocal<Boolean> IS_DECORATING = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final AtomicBoolean dirtyPublishSweep = new AtomicBoolean(false);
 
@@ -73,7 +72,6 @@ public class GenerationScheduler {
     private final AtomicLong serializedCount = new AtomicLong(0);
 
     public final AtomicLong guardsBlockedCount = new AtomicLong(0);
-    private final ConcurrentHashMap<String, ReentrantLock> modLocks = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicLong> serializedGeneratorCounts = new ConcurrentHashMap<>();
 
     // Deadlock Watchdog tracking
@@ -510,7 +508,7 @@ public class GenerationScheduler {
         }
 
         // 6. In-flight backpressure / memory guard: Cap maximum concurrent in-flight generations
-        int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
+        int maxInFlight = getMaxInFlightWindow();
 
         // Player/server IMMEDIATE requests may bypass the cap so the tick does not wait.
         // Background producers (bench/pregen) must not: they use IMMEDIATE too, and that
@@ -589,7 +587,7 @@ public class GenerationScheduler {
         // 5. Bound neighbour terrain requests too. They are dependencies, but a feature
         // worker can request eight of them per target; without a ceiling the dependency
         // wavefront grows without bound and defeats the in-flight memory budget.
-        int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
+        int maxInFlight = getMaxInFlightWindow();
         if (this.inFlight.size() >= maxInFlight + 256) {
             return CompletableFuture.completedFuture(null);
         }
@@ -1094,15 +1092,9 @@ public class GenerationScheduler {
                 this.serializedCount.incrementAndGet();
                 recordSerializedGenerator(generator.getClass().getName());
                 long genStart = System.nanoTime();
-                // SERIALIZE means serialize this generator, not every chunk in the batch.
-                // DynamicTrees' PoissonDiscProvider, for example, shares a mutable disc list
-                // but is independent of every other IWorldGenerator. A per-instance lock
-                // removes its CMEs while unrelated generators keep running concurrently.
-                ReentrantLock genLock = this.generatorLocks.computeIfAbsent(generator, ignored -> new ReentrantLock());
-                long lockStart = System.nanoTime();
-                genLock.lock();
-                this.generatorLockWaitNanos.addAndGet(System.nanoTime() - lockStart);
-                this.generatorLockWaits.incrementAndGet();
+                // No generator monitor. Stateful generators are thread-confined at their
+                // mutable fields (DynamicTrees' provider/random are ThreadLocal), so the
+                // 4-phase stride can run every generator concurrently.
                 try {
                     try {
                         generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
@@ -1111,7 +1103,6 @@ public class GenerationScheduler {
                         WorldFlow.LOGGER.warn("[WorldFlow] Generator {} failed in chunk [{}, {}]; continuing with remaining generators", generator.getClass().getName(), chunkX, chunkZ, t);
                     }
                 } finally {
-                    genLock.unlock();
                     recordGeneratorTime(generator.getClass().getSimpleName(), System.nanoTime() - genStart);
                 }
             } else if (safety == GeneratorSafetyLevel.PARALLEL_SAFE) {
@@ -1488,7 +1479,7 @@ public class GenerationScheduler {
         if (isQuiescing() || isSaveWindowActive()) {
             return;
         }
-        int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
+        int maxInFlight = getMaxInFlightWindow();
         while (this.inFlight.size() < maxInFlight && !this.pendingRequestQueue.isEmpty()) {
             StatusHolder holder = this.pendingRequestQueue.poll();
             if (holder == null) break;
@@ -1593,6 +1584,19 @@ public class GenerationScheduler {
 
     public int getInFlightCount() {
         return this.inFlight.size();
+    }
+
+    /** 128-chunk wavefront for the 32-core target; benchmark overrides this explicitly. */
+    public int getMaxInFlightWindow() {
+        int configured = this.maxInFlightWindow;
+        if (configured > 0) {
+            return configured;
+        }
+        return ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
+    }
+
+    public void setMaxInFlightWindow(int window) {
+        this.maxInFlightWindow = Math.max(1, window);
     }
 
     /**

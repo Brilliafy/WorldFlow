@@ -27,22 +27,10 @@ import java.util.Map;
 import java.util.Random;
 
 public class CustomStructurePlotter {
-    private static final int STRIPES = 1024;
-    private static final java.util.concurrent.locks.ReentrantLock[] REGION_LOCKS = new java.util.concurrent.locks.ReentrantLock[STRIPES];
-    static {
-        for (int i = 0; i < STRIPES; i++) REGION_LOCKS[i] = new java.util.concurrent.locks.ReentrantLock();
-    }
-    private static java.util.concurrent.locks.ReentrantLock regionLock(ChunkCoordinate c) {
-        int h = (c.getChunkX() * 3129871) ^ (c.getChunkZ() * 618791);
-        return REGION_LOCKS[(h ^ (h >>> 16)) & (STRIPES - 1)];
-    }
-
     private final java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, BO4CustomStructure[][]> bo4StructureCache;
     private final java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, PlottedChunksRegion> plottedChunks;
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.List<ChunkCoordinate>> spawnedStructuresByName;
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.ConcurrentHashMap<ChunkCoordinate, Integer>> spawnedStructuresByGroup;
-    private final Object processingLock = new Object();
-    private boolean processing = false;
     private final java.util.concurrent.atomic.AtomicBoolean structurePlottedAtSpawn = new java.util.concurrent.atomic.AtomicBoolean(false);
     private final ThreadLocal<Map<ChunkCoordinate, ArrayList<String>>> structureNamesPerChunk =
             ThreadLocal.withInitial(java.util.concurrent.ConcurrentHashMap::new);
@@ -120,9 +108,8 @@ public class CustomStructurePlotter {
     }
 
     public void spawnBO4Chunk(ChunkCoordinate chunkCoordinate, LocalWorld world, ChunkCoordinate chunkBeingPopulated) {
-        java.util.concurrent.locks.ReentrantLock lock = regionLock(chunkCoordinate);
-        lock.lock();
-        try { spawnBO4Chunk0(chunkCoordinate, world, chunkBeingPopulated); } finally { lock.unlock(); }
+        // 4-phase stride guarantees disjoint 3x3 population windows; no region monitor.
+        spawnBO4Chunk0(chunkCoordinate, world, chunkBeingPopulated);
     }
 
     private void spawnBO4Chunk0(ChunkCoordinate chunkCoordinate, LocalWorld world, ChunkCoordinate chunkBeingPopulated) {
@@ -165,9 +152,7 @@ public class CustomStructurePlotter {
                 this.plotStructures(structureCache, targetStructure, targetBiomes, world, rand, spawn, true);
             }
         }
-        java.util.concurrent.locks.ReentrantLock lock = regionLock(chunkCoord);
-        lock.lock();
-        try { return plotStructures0(structureCache, targetStructure, targetBiomes, world, rand, chunkCoord, spawningStructureAtSpawn); } finally { lock.unlock(); }
+        return plotStructures0(structureCache, targetStructure, targetBiomes, world, rand, chunkCoord, spawningStructureAtSpawn);
     }
 
     private static final java.util.concurrent.ConcurrentHashMap<BiomeConfig, java.util.Set<String>> BIOME_BO4_MAP =

@@ -15,6 +15,9 @@ public class WorldFlowLateMixinLoader implements ILateMixinLoader {
         if (Loader.isModLoaded("openterraingenerator")) {
             configs.add("mixins.worldflow.otg.json");
         }
+        if (Loader.isModLoaded("dynamictrees")) {
+            configs.add("mixins.worldflow.dynamictrees.json");
+        }
         if (Loader.isModLoaded("nuclearcraft")) {
             configs.add("mixins.worldflow.nc.json");
         }

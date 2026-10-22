@@ -44,7 +44,10 @@ public abstract class MapGenStructureLocklessMixin {
                 StructureStart start = this.getStructureStart(chunkX, chunkZ);
                 this.structureMap.put(key, start);
                 if (start.isSizeableStructure()) {
-                    this.func_143026_a(chunkX, chunkZ, start);
+                    // Never serialize structure NBT on a base/feature worker.
+                    com.cleanroommc.worldflow.pipeline.structure.StructureNbtStager.stage(
+                            ((MapGenStructureAccessor) (Object) this).worldflow$getStructureData(),
+                            start, chunkX, chunkZ);
                 }
             }
         } catch (Throwable t) {

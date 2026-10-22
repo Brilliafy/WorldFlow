@@ -87,6 +87,7 @@ public class PublishManager {
     public int tick(WorldServer world, int maxBudget) {
         CascadeBlockBuffer.INSTANCE.flushStagedEntitiesForLoadedChunks(world);
         drainTileEntityPurges();
+        com.cleanroommc.worldflow.pipeline.structure.StructureNbtStager.drain(128);
         tileEntityHygiene(world);
         GenerationScheduler.getInstance().sweepPublishableIfDirty();
         if (this.pendingPublishQueue.isEmpty()) {

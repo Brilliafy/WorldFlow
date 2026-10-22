@@ -7,7 +7,6 @@ import com.pg85.otg.generator.ObjectSpawner;
 import com.pg85.otg.generator.resource.Resource;
 import com.pg85.otg.customobjects.structures.CustomStructureCache;
 import com.pg85.otg.util.ChunkCoordinate;
-import com.cleanroommc.worldflow.pipeline.otg.WorldFlowLockable;
 import com.cleanroommc.worldflow.pipeline.otg.OTGStructureService;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -47,6 +46,30 @@ public abstract class ObjectSpawnerMixin {
     private com.pg85.otg.common.LocalWorld world;
     @org.spongepowered.asm.mixin.Shadow
     private java.util.Random rand;
+
+    @Redirect(method = "doPopulate", remap = false,
+            at = @At(value = "INVOKE", ordinal = 0, target = "Lcom/pg85/otg/customobjects/structures/CustomStructureCache;plotBo4Structures(Ljava/util/Random;Lcom/pg85/otg/util/ChunkCoordinate;)V"))
+    private void worldflow$plot0(CustomStructureCache cache, Random rand, ChunkCoordinate coord) {
+        OTGStructureService.executePlot(cache, rand, coord);
+    }
+
+    @Redirect(method = "doPopulate", remap = false,
+            at = @At(value = "INVOKE", ordinal = 1, target = "Lcom/pg85/otg/customobjects/structures/CustomStructureCache;plotBo4Structures(Ljava/util/Random;Lcom/pg85/otg/util/ChunkCoordinate;)V"))
+    private void worldflow$plot1(CustomStructureCache cache, Random rand, ChunkCoordinate coord) {
+        OTGStructureService.executePlot(cache, rand, coord);
+    }
+
+    @Redirect(method = "doPopulate", remap = false,
+            at = @At(value = "INVOKE", ordinal = 2, target = "Lcom/pg85/otg/customobjects/structures/CustomStructureCache;plotBo4Structures(Ljava/util/Random;Lcom/pg85/otg/util/ChunkCoordinate;)V"))
+    private void worldflow$plot2(CustomStructureCache cache, Random rand, ChunkCoordinate coord) {
+        OTGStructureService.executePlot(cache, rand, coord);
+    }
+
+    @Redirect(method = "doPopulate", remap = false,
+            at = @At(value = "INVOKE", ordinal = 3, target = "Lcom/pg85/otg/customobjects/structures/CustomStructureCache;plotBo4Structures(Ljava/util/Random;Lcom/pg85/otg/util/ChunkCoordinate;)V"))
+    private void worldflow$plot3(CustomStructureCache cache, Random rand, ChunkCoordinate coord) {
+        OTGStructureService.executePlot(cache, rand, coord);
+    }
 
     @Inject(method = "doPopulate", at = @At("HEAD"), remap = false)
     private void worldflow$batchPlots(ChunkCoordinate chunkCoord, CallbackInfo ci) {

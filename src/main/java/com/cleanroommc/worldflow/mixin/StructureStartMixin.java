@@ -10,18 +10,22 @@ import net.minecraft.world.gen.structure.StructureStart;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 
-import java.util.Iterator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * MapGenStructure used to serialize this method on the generator instance. That lock was
- * removed for parallel terrain generation, but the component list is still mutable and a
- * single StructureStart can be visited by several neighboring population workers.
+ * Stage 2/3 structure layout is read-only. Vanilla removed fully placed components
+ * from the shared LinkedList while neighbouring stride workers were still iterating
+ * it, which caused CMEs. Removing that mutation gives every worker an immutable
+ * component view; completed components are simply revisited and are no-ops.
  *
- * <p>A monitor on the StructureStart (not on the MapGenStructure) keeps each structure
- * piece list coherent without serializing unrelated structures or chunks.</p>
+ * <p>There is deliberately no monitor here. The component list is finalized before
+ * the 4-phase population phases start.</p>
  */
 @Mixin(StructureStart.class)
 public abstract class StructureStartMixin {
@@ -29,19 +33,31 @@ public abstract class StructureStartMixin {
     @Shadow
     protected List<StructureComponent> components;
 
+    @Unique
+    private final Set<StructureComponent> worldflow$completed = ConcurrentHashMap.newKeySet();
+
     /**
      * @author WorldFlow
-     * @reason Structure components are mutated while neighboring chunks write the same start.
+     * @reason Read-only component iteration; never mutate the shared layout list on a worker.
      */
     @Overwrite
     public void generateStructure(World worldIn, Random rand, StructureBoundingBox structurebb) {
-        synchronized (this) {
-            Iterator<StructureComponent> iterator = this.components.iterator();
-            while (iterator.hasNext()) {
-                StructureComponent structurecomponent = iterator.next();
-                if (structurecomponent.getBoundingBox().intersectsWith(structurebb)
-                        && !structurecomponent.addComponentParts(worldIn, rand, structurebb)) {
-                    iterator.remove();
+        List<StructureComponent> snapshot;
+        try {
+            snapshot = new ArrayList<>(this.components);
+        } catch (Throwable ignored) {
+            // Defensive fallback for a start that is still being finalized during boot.
+            snapshot = this.components;
+        }
+        for (StructureComponent component : snapshot) {
+            if (this.worldflow$completed.contains(component)) {
+                continue;
+            }
+            if (component.getBoundingBox().intersectsWith(structurebb)) {
+                // false means the component has no remaining pieces. Record it in the
+                // lock-free set instead of removing from the shared layout list.
+                if (!component.addComponentParts(worldIn, rand, structurebb)) {
+                    this.worldflow$completed.add(component);
                 }
             }
         }
@@ -49,29 +65,27 @@ public abstract class StructureStartMixin {
 
     /**
      * @author WorldFlow
-     * @reason The NBT writer iterates the same mutable component list as generateStructure.
+     * @reason NBT is serialized on the Stage 4 tick thread, so no worker-thread monitor is needed.
      */
     @Overwrite
     public NBTTagCompound writeStructureComponentsToNBT(int chunkX, int chunkZ) {
         StructureStart self = (StructureStart) (Object) this;
-        synchronized (this) {
-            if (MapGenStructureIO.getStructureStartName(self) == null) {
-                throw new RuntimeException("StructureStart \"" + this.getClass().getName()
-                        + "\" missing ID Mapping, Modder see MapGenStructureIO");
-            }
-            NBTTagCompound tag = new NBTTagCompound();
-            tag.setString("id", MapGenStructureIO.getStructureStartName(self));
-            tag.setInteger("ChunkX", chunkX);
-            tag.setInteger("ChunkZ", chunkZ);
-            tag.setTag("BB", this.boundingBox.toNBTTagIntArray());
-            NBTTagList children = new NBTTagList();
-            for (StructureComponent component : this.components) {
-                children.appendTag(component.createStructureBaseNBT());
-            }
-            tag.setTag("Children", children);
-            self.writeToNBT(tag);
-            return tag;
+        if (MapGenStructureIO.getStructureStartName(self) == null) {
+            throw new RuntimeException("StructureStart \"" + this.getClass().getName()
+                    + "\" missing ID Mapping, Modder see MapGenStructureIO");
         }
+        NBTTagCompound tag = new NBTTagCompound();
+        tag.setString("id", MapGenStructureIO.getStructureStartName(self));
+        tag.setInteger("ChunkX", chunkX);
+        tag.setInteger("ChunkZ", chunkZ);
+        tag.setTag("BB", this.boundingBox.toNBTTagIntArray());
+        NBTTagList children = new NBTTagList();
+        for (StructureComponent component : new ArrayList<>(this.components)) {
+            children.appendTag(component.createStructureBaseNBT());
+        }
+        tag.setTag("Children", children);
+        self.writeToNBT(tag);
+        return tag;
     }
 
     @Shadow
