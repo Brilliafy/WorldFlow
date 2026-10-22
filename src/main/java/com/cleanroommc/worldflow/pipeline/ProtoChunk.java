@@ -98,26 +98,18 @@ public class ProtoChunk {
 
     public void ensureBiomesFilled(com.pg85.otg.forge.world.ForgeWorld world) {
         if (!this.biomesFilled && world != null) {
-            boolean acquired = false;
+            // Biome generation is exactly the operation that must be single-owner for a
+            // chunk. The old 50ms tryLock timeout fell through to a concurrent fill when
+            // two features touched the same neighbour ProtoChunk, producing stray biome
+            // cells without changing any blocks. Wait for the owner instead.
+            this.chunkLock.lock();
             try {
-                acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            if (acquired) {
-                try {
-                    if (!this.biomesFilled && this.underlyingChunk != null) {
-                        com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext.fillBiomeArray(world, this.underlyingChunk);
-                        this.biomesFilled = true;
-                    }
-                } finally {
-                    this.chunkLock.unlock();
-                }
-            } else {
                 if (!this.biomesFilled && this.underlyingChunk != null) {
                     com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext.fillBiomeArray(world, this.underlyingChunk);
                     this.biomesFilled = true;
                 }
+            } finally {
+                this.chunkLock.unlock();
             }
         }
     }

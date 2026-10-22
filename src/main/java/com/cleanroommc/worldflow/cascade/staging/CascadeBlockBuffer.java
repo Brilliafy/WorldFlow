@@ -177,6 +177,7 @@ public class CascadeBlockBuffer {
             // is computed once by checkLight() during publish, and generateSkylightMap()
             // recalculates the heightmap - so none of that per-block work is needed.
             net.minecraft.world.chunk.storage.ExtendedBlockStorage[] sections = chunk.getBlockStorageArray();
+            synchronized (blocksToPlace) {
             for (StagedBlock staged : blocksToPlace) {
                 BlockPos pos = staged.getPos();
                 int y = pos.getY();
@@ -219,6 +220,7 @@ public class CascadeBlockBuffer {
             if (count > 0) {
                 chunk.markDirty();
             }
+            }
         } finally {
             world.captureBlockSnapshots = oldCapture;
         }
@@ -234,8 +236,10 @@ public class CascadeBlockBuffer {
         if (tickDimMap != null) {
             List<StagedTick> ticks = tickDimMap.remove(chunkPos);
             if (ticks != null && !ticks.isEmpty()) {
-                for (StagedTick t : ticks) {
-                    world.scheduleBlockUpdate(t.pos, t.block, t.delay, t.priority);
+                synchronized (ticks) {
+                    for (StagedTick t : ticks) {
+                        world.scheduleBlockUpdate(t.pos, t.block, t.delay, t.priority);
+                    }
                 }
             }
         }
@@ -245,12 +249,14 @@ public class CascadeBlockBuffer {
         if (entityDimMap != null) {
             List<Entity> entities = entityDimMap.remove(chunkPos);
             if (entities != null && !entities.isEmpty()) {
-                for (Entity entity : entities) {
-                    try {
-                        world.spawnEntity(entity);
-                        totalEntitiesFlushed.incrementAndGet();
-                    } catch (Throwable t) {
-                        WorldFlow.LOGGER.debug("[WorldFlow] Error spawning staged entity in chunk [{}, {}]", chunkPos.x, chunkPos.z, t);
+                synchronized (entities) {
+                    for (Entity entity : entities) {
+                        try {
+                            world.spawnEntity(entity);
+                            totalEntitiesFlushed.incrementAndGet();
+                        } catch (Throwable t) {
+                            WorldFlow.LOGGER.debug("[WorldFlow] Error spawning staged entity in chunk [{}, {}]", chunkPos.x, chunkPos.z, t);
+                        }
                     }
                 }
             }
@@ -274,12 +280,16 @@ public class CascadeBlockBuffer {
                 it.remove();
                 List<Entity> entities = entry.getValue();
                 if (entities != null) {
-                    for (Entity entity : entities) {
-                        try {
-                            world.spawnEntity(entity);
-                            totalEntitiesFlushed.incrementAndGet();
-                        } catch (Throwable t) {
-                            WorldFlow.LOGGER.debug("[WorldFlow] Error spawning staged entity in loaded chunk [{}, {}]", pos.x, pos.z, t);
+                    // stageEntity can still add to this list after the map entry is removed.
+                    // The list is synchronized but iteration must hold its monitor.
+                    synchronized (entities) {
+                        for (Entity entity : entities) {
+                            try {
+                                world.spawnEntity(entity);
+                                totalEntitiesFlushed.incrementAndGet();
+                            } catch (Throwable t) {
+                                WorldFlow.LOGGER.debug("[WorldFlow] Error spawning staged entity in loaded chunk [{}, {}]", pos.x, pos.z, t);
+                            }
                         }
                     }
                 }
@@ -301,11 +311,13 @@ public class CascadeBlockBuffer {
                 it.remove();
                 List<StagedTick> ticks = entry.getValue();
                 if (ticks != null) {
-                    for (StagedTick t : ticks) {
-                        try {
-                            world.scheduleBlockUpdate(t.pos, t.block, t.delay, t.priority);
-                        } catch (Throwable ex) {
-                            WorldFlow.LOGGER.debug("[WorldFlow] Error applying staged tick in loaded chunk [{}, {}]", pos.x, pos.z, ex);
+                    synchronized (ticks) {
+                        for (StagedTick t : ticks) {
+                            try {
+                                world.scheduleBlockUpdate(t.pos, t.block, t.delay, t.priority);
+                            } catch (Throwable ex) {
+                                WorldFlow.LOGGER.debug("[WorldFlow] Error applying staged tick in loaded chunk [{}, {}]", pos.x, pos.z, ex);
+                            }
                         }
                     }
                 }

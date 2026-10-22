@@ -110,6 +110,24 @@ public class PublishManager {
         CascadeBlockBuffer.INSTANCE.flushStagedTicksForLoadedChunks(world);
         CascadeBlockBuffer.INSTANCE.flushStagedEntitiesForLoadedChunks(world);
 
+        // ChunkProviderServer.getLoadedChunk() clears unloadQueued. Feature neighbours
+        // touch published chunks constantly, so a publish-time queueUnload is not enough:
+        // the server cache grew to 3,322 loaded chunks during the 4,225 run. Re-queue
+        // chunks outside every live 3x3 feature window once per second.
+        if ((++this.unloadSweepTicks % 20) == 0
+                && world.playerEntities.isEmpty()
+                && GenerationScheduler.getInstance().getInFlightCount() > 0) {
+            java.util.Set<Long> protectedKeys = GenerationScheduler.getInstance().getProtectedChunkKeys();
+            for (Chunk loaded : world.getChunkProvider().loadedChunks.values()) {
+                if (loaded == null) continue;
+                long key = ChunkPos.asLong(loaded.x, loaded.z);
+                if (protectedKeys.contains(key)) continue;
+                if (net.minecraftforge.common.ForgeChunkManager.getPersistentChunksFor(world)
+                        .containsKey(new ChunkPos(loaded.x, loaded.z))) continue;
+                world.getChunkProvider().queueUnload(loaded);
+            }
+        }
+
         return publishedCount;
     }
 
@@ -299,6 +317,7 @@ public class PublishManager {
     }
 
     private int hygieneTickCounter = 0;
+    private int unloadSweepTicks = 0;
 
     /**
      * Safety net for tile entities that end up on impossible blocks through paths we do not

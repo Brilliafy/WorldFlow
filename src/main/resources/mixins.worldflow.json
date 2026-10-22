@@ -23,6 +23,7 @@
     "MapGenStructureConcurrencyMixin",
     "MapGenStructureLocklessMixin",
     "MapGenStructureDataMixin",
+    "StructureStartMixin",
     "WorldEntitySpawnerMixin",
     "EntityTrackerMixin",
     "compat.RCSavedDataMixin",

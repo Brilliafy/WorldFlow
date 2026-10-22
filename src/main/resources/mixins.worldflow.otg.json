@@ -11,6 +11,7 @@
     "ChunkProviderOTGStructuresMixin",
     "ForgeEngineMixin",
     "ForgeWorldMixin",
+    "ForgeWorldBiomeGeneratorMixin",
     "ForgeWorldNullGuardMixin",
     "SmoothingAreaNullGuardMixin",
     "OreGenMixin",

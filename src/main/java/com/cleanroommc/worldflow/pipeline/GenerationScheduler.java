@@ -45,6 +45,8 @@ public class GenerationScheduler {
     private final Queue<StatusHolder> pendingRequestQueue = new ConcurrentLinkedQueue<>();
     private final Map<Long, StatusHolder> pendingRequests = new ConcurrentHashMap<>();
     private final Map<Long, ProtoChunk> carverCache = new ConcurrentHashMap<>();
+    private final Queue<Long> carverCacheOrder = new ConcurrentLinkedQueue<>();
+    private static final int CARVER_CACHE_LIMIT = 512;
     private final Map<IWorldGenerator, ReentrantLock> generatorLocks = new ConcurrentHashMap<>();
     private static final ThreadLocal<Boolean> IS_DECORATING = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private final AtomicBoolean dirtyPublishSweep = new AtomicBoolean(false);
@@ -510,7 +512,11 @@ public class GenerationScheduler {
         // 6. In-flight backpressure / memory guard: Cap maximum concurrent in-flight generations
         int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
 
-        if (this.inFlight.size() >= maxInFlight && !isWorkerThread && priority != GenerationPriority.IMMEDIATE) {
+        // Player/server IMMEDIATE requests may bypass the cap so the tick does not wait.
+        // Background producers (bench/pregen) must not: they use IMMEDIATE too, and that
+        // previously admitted an entire phase at once.
+        boolean serverImmediate = isServerThread && priority == GenerationPriority.IMMEDIATE;
+        if (this.inFlight.size() >= maxInFlight && !isWorkerThread && !serverImmediate) {
             if (!isServerThread) {
                 // Background callers (e.g. bench or async threads): throttle smoothly
                 while (this.inFlight.size() >= maxInFlight) {
@@ -580,7 +586,15 @@ public class GenerationScheduler {
             return pending.getCarversFuture();
         }
 
-        // 5. Create new StatusHolder with targetStatus = CARVERS
+        // 5. Bound neighbour terrain requests too. They are dependencies, but a feature
+        // worker can request eight of them per target; without a ceiling the dependency
+        // wavefront grows without bound and defeats the in-flight memory budget.
+        int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
+        if (this.inFlight.size() >= maxInFlight + 256) {
+            return CompletableFuture.completedFuture(null);
+        }
+
+        // 6. Create new StatusHolder with targetStatus = CARVERS
         StatusHolder holder = new StatusHolder(world, x, z, ChunkStatus.CARVERS, GenerationPriority.PLAYER);
         StatusHolder prev = this.inFlight.putIfAbsent(key, holder);
         if (prev != null) {
@@ -1080,6 +1094,15 @@ public class GenerationScheduler {
                 this.serializedCount.incrementAndGet();
                 recordSerializedGenerator(generator.getClass().getName());
                 long genStart = System.nanoTime();
+                // SERIALIZE means serialize this generator, not every chunk in the batch.
+                // DynamicTrees' PoissonDiscProvider, for example, shares a mutable disc list
+                // but is independent of every other IWorldGenerator. A per-instance lock
+                // removes its CMEs while unrelated generators keep running concurrently.
+                ReentrantLock genLock = this.generatorLocks.computeIfAbsent(generator, ignored -> new ReentrantLock());
+                long lockStart = System.nanoTime();
+                genLock.lock();
+                this.generatorLockWaitNanos.addAndGet(System.nanoTime() - lockStart);
+                this.generatorLockWaits.incrementAndGet();
                 try {
                     try {
                         generator.generate(fmlRandom, chunkX, chunkZ, world, chunkGenerator, chunkProvider);
@@ -1088,6 +1111,7 @@ public class GenerationScheduler {
                         WorldFlow.LOGGER.warn("[WorldFlow] Generator {} failed in chunk [{}, {}]; continuing with remaining generators", generator.getClass().getName(), chunkX, chunkZ, t);
                     }
                 } finally {
+                    genLock.unlock();
                     recordGeneratorTime(generator.getClass().getSimpleName(), System.nanoTime() - genStart);
                 }
             } else if (safety == GeneratorSafetyLevel.PARALLEL_SAFE) {
@@ -1196,16 +1220,22 @@ public class GenerationScheduler {
     }
 
     private void putCarverCache(long key, ProtoChunk proto) {
-        if (this.carverCache.size() > 2048) {
-            Iterator<Long> it = this.carverCache.keySet().iterator();
-            int evicted = 0;
-            while (it.hasNext() && evicted < 1024) {
-                it.next();
-                it.remove();
-                evicted++;
+        // This cache is a reference to a full chunk (terrain + sections), not a small
+        // coordinate map. A 2048-entry cache retained >8 GB at 4 MB/chunk and was the
+        // dominant reason a 1089-chunk run kept the JVM above 60 GB RSS. The active
+        // wavefront only needs the current chunk and its 8 neighbours; 512 entries are
+        // ample, and the FIFO keeps memory constant for a 4,225 or one-million-chunk run.
+        this.carverCache.put(key, proto);
+        this.carverCacheOrder.add(key);
+        while (this.carverCache.size() > CARVER_CACHE_LIMIT) {
+            Long oldest = this.carverCacheOrder.poll();
+            if (oldest == null) {
+                break;
+            }
+            if (oldest.longValue() != key) {
+                this.carverCache.remove(oldest);
             }
         }
-        this.carverCache.put(key, proto);
     }
 
     public void invalidateCarverCache(long key) {
@@ -1563,6 +1593,25 @@ public class GenerationScheduler {
 
     public int getInFlightCount() {
         return this.inFlight.size();
+    }
+
+    /**
+     * Chunks touched by an in-flight holder's 3x3 feature window. The batch unload
+     * sweep must not queue these: a feature may read a published neighbour at any time.
+     */
+    public java.util.Set<Long> getProtectedChunkKeys() {
+        java.util.Set<Long> keys = new java.util.HashSet<>();
+        for (StatusHolder holder : this.inFlight.values()) {
+            if (holder == null) continue;
+            int cx = holder.getPos().x;
+            int cz = holder.getPos().z;
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    keys.add(ChunkPos.asLong(cx + dx, cz + dz));
+                }
+            }
+        }
+        return keys;
     }
 
     public long getParallelCount() {

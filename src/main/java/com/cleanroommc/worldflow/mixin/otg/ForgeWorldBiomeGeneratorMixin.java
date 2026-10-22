@@ -1,0 +1,82 @@
+package com.cleanroommc.worldflow.mixin.otg;
+
+import com.pg85.otg.common.LocalWorld;
+import com.pg85.otg.generator.biome.BiomeGenerator;
+import com.pg85.otg.forge.world.ForgeWorld;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
+
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+
+/**
+ * Concurrency-safe OTG biome provider. The raw layered generator owns shared
+ * scratch arrays and must not be called from multiple workers. Build one clone
+ * per calling thread from the same implementation class and LocalWorld.
+ */
+@Mixin(targets = "com.pg85.otg.forge.world.ForgeWorld", remap = false)
+public abstract class ForgeWorldBiomeGeneratorMixin {
+
+    @Shadow
+    private BiomeGenerator biomeGenerator;
+
+    @Unique
+    private final ThreadLocal<BiomeGenerator> worldflow$threadBiome = new ThreadLocal<>();
+
+    @Inject(method = "getBiomeGenerator", at = @At("HEAD"), cancellable = true, remap = false)
+    private void worldflow$threadLocalBiomeGenerator(CallbackInfoReturnable<BiomeGenerator> cir) {
+        BiomeGenerator local = this.worldflow$threadBiome.get();
+        if (local == null) {
+            local = worldflow$clone(this.biomeGenerator);
+            if (local != null) {
+                this.worldflow$threadBiome.set(local);
+            }
+        }
+        if (local != null) {
+            cir.setReturnValue(local);
+        }
+    }
+
+    @Unique
+    private static BiomeGenerator worldflow$clone(BiomeGenerator shared) {
+        if (shared == null) {
+            return null;
+        }
+        try {
+            BiomeGenerator raw = shared;
+            if (shared.getClass().getName().endsWith("CachedBiomeGenerator")) {
+                Field rawField = shared.getClass().getDeclaredField("generator");
+                rawField.setAccessible(true);
+                raw = (BiomeGenerator) rawField.get(shared);
+            }
+            Field worldField = null;
+            for (Class<?> c = raw.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                try {
+                    worldField = c.getDeclaredField("world");
+                    break;
+                } catch (NoSuchFieldException ignored) {
+                }
+            }
+            if (worldField == null) {
+                return null;
+            }
+            worldField.setAccessible(true);
+            LocalWorld world = (LocalWorld) worldField.get(raw);
+            Constructor<?> constructor = raw.getClass().getDeclaredConstructor(LocalWorld.class);
+            constructor.setAccessible(true);
+            BiomeGenerator fresh = (BiomeGenerator) constructor.newInstance(world);
+            if (raw != shared) {
+                Constructor<?> cacheConstructor = shared.getClass().getDeclaredConstructor(BiomeGenerator.class);
+                cacheConstructor.setAccessible(true);
+                return (BiomeGenerator) cacheConstructor.newInstance(fresh);
+            }
+            return fresh;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+}

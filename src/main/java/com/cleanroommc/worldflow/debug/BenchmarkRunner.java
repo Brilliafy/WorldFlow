@@ -67,7 +67,11 @@ public class BenchmarkRunner {
                 long startGuardsBlocked = GenerationScheduler.getInstance().getGuardsBlockedCount();
                 Map<String, Long> startGenCounts = GenerationScheduler.getInstance().getSerializedGeneratorCountsSnapshot();
 
-                int maxInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
+                // Keep the benchmark window at roughly one target per worker. The old
+                // config cap (96) admitted several 3x3 dependency rings at once; the
+                // carver cache then thrashed and G1 promoted thousands of transient chunks.
+                int configuredInFlight = ModConfig.CONCURRENCY != null ? ModConfig.CONCURRENCY.maxInFlightGenerations : 32;
+                int maxInFlight = Math.min(configuredInFlight, Math.max(32, workers > 0 ? workers : 32));
                 List<BenchChunkEntry> entries = new CopyOnWriteArrayList<>();
 
                 // Timeout at 3x expected duration (minimum 60s)
@@ -246,21 +250,10 @@ public class BenchmarkRunner {
                 watchdogThread.setDaemon(true);
                 watchdogThread.start();
 
-                // Stage 1: Pre-prime base terrain (CARVERS) for area plus 1-chunk border in parallel
-                List<CompletableFuture<Chunk>> primerFutures = new ArrayList<>();
-                for (int dx = -radius - 1; dx <= radius + 1; dx++) {
-                    for (int dz = -radius - 1; dz <= radius + 1; dz++) {
-                        CompletableFuture<Chunk> f = GenerationScheduler.getInstance().requestCarversChunk(world, centerX + dx, centerZ + dz);
-                        if (f != null) {
-                            primerFutures.add(f);
-                        }
-                    }
-                }
-                try {
-                    CompletableFuture.allOf(primerFutures.toArray(new CompletableFuture[0])).join();
-                } catch (Throwable t) {
-                    WorldFlow.LOGGER.warn("[WorldFlow Bench] Priming had partial errors; proceeding with features", t);
-                }
+                // Stage 1 used to prime the entire radius+1 square before any features ran.
+                // That breadth-first burst allocated thousands of ProtoChunks and OTG
+                // buffers that survived until the batch ended. Base terrain is now requested
+                // on demand by the 3x3 feature barrier, so only the active wavefront is live.
 
                 // Stage 2: Partition target chunks into 4 disjoint spatial stride phases
                 @SuppressWarnings("unchecked")
