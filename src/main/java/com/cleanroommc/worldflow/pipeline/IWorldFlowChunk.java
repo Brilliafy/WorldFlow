@@ -15,4 +15,7 @@ public interface IWorldFlowChunk {
     boolean worldflow$isPublished();
 
     void worldflow$setPublished(boolean published);
+
+    /** One lock per Chunk instance, shared by every ProtoChunk wrapper around it. */
+    java.util.concurrent.locks.ReentrantLock worldflow$chunkLock();
 }

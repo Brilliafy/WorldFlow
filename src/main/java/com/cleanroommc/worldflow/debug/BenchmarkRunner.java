@@ -264,7 +264,7 @@ public class BenchmarkRunner {
                 }
                 GenerationScheduler.getInstance().registerBatchTargets(targetCoords);
 
-                final boolean prefetch = Boolean.getBoolean("worldflow.prefetchBiomes");
+                final boolean prefetch = com.cleanroommc.worldflow.pipeline.otg.BiomePrefetcher.isEnabled();
                 if (prefetch) {
                     com.cleanroommc.worldflow.pipeline.otg.BiomePrefetcher.start(world);
                 }

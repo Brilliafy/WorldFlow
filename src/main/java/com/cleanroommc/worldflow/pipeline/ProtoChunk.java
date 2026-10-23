@@ -86,6 +86,19 @@ public class ProtoChunk {
     }
 
     private final ReentrantLock chunkLock = new ReentrantLock();
+
+    /**
+     * One lock per underlying {@link Chunk}, not per ProtoChunk wrapper. A chunk can be
+     * wrapped by more than one ProtoChunk (retained cache + a later holder), and two
+     * distinct locks would let both threads resize the same palette.
+     */
+    private ReentrantLock lockOf() {
+        Chunk chunk = this.underlyingChunk;
+        if (chunk instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) {
+            return ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) chunk).worldflow$chunkLock();
+        }
+        return this.chunkLock;
+    }
     private volatile boolean biomesFilled = false;
 
     public boolean isBiomesFilled() {
@@ -102,14 +115,15 @@ public class ProtoChunk {
             // chunk. The old 50ms tryLock timeout fell through to a concurrent fill when
             // two features touched the same neighbour ProtoChunk, producing stray biome
             // cells without changing any blocks. Wait for the owner instead.
-            this.chunkLock.lock();
+            java.util.concurrent.locks.ReentrantLock lock = lockOf();
+            lock.lock();
             try {
                 if (!this.biomesFilled && this.underlyingChunk != null) {
                     com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext.fillBiomeArray(world, this.underlyingChunk);
                     this.biomesFilled = true;
                 }
             } finally {
-                this.chunkLock.unlock();
+                lock.unlock();
             }
         }
     }
@@ -124,24 +138,26 @@ public class ProtoChunk {
      * publishing a partially decorated chunk is never allowed.
      */
     public void resetForRegeneration() {
-        this.chunkLock.lock();
+        java.util.concurrent.locks.ReentrantLock lock = lockOf();
+        lock.lock();
         try {
             this.underlyingChunk = new Chunk(this.world, this.x, this.z);
             this.status.set(ChunkStatus.EMPTY);
             this.biomesFilled = false;
             this.ownerThread = null;
         } finally {
-            this.chunkLock.unlock();
+            lock.unlock();
         }
     }
 
     public void setUnderlyingChunk(Chunk chunk) {
         if (chunk != null) {
-            this.chunkLock.lock();
+            java.util.concurrent.locks.ReentrantLock lock = lockOf();
+            lock.lock();
             try {
                 this.underlyingChunk = chunk;
             } finally {
-                this.chunkLock.unlock();
+                lock.unlock();
             }
         }
     }
@@ -194,9 +210,10 @@ public class ProtoChunk {
         // writers (Quark stone gen, structures) can target a chunk that its owner is
         // decorating. The owner's old lock-free fast path raced those writers on the
         // block-state palette. ReentrantLock keeps owner re-entry working.
+        java.util.concurrent.locks.ReentrantLock lock = lockOf();
         boolean acquired = false;
         try {
-            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+            acquired = lock.tryLock(50, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -204,7 +221,7 @@ public class ProtoChunk {
             try {
                 return applyBlockWrite(pos, state, teNbt);
             } finally {
-                this.chunkLock.unlock();
+                lock.unlock();
             }
         }
         // Deadlock prevention (e.g. cross-chunk cycle between adjacent workers):
@@ -250,7 +267,8 @@ public class ProtoChunk {
      * palette concurrently with a cross-chunk writer.
      */
     public int flushStagedBlocks(net.minecraft.world.WorldServer world) {
-        this.chunkLock.lock();
+        java.util.concurrent.locks.ReentrantLock lock = lockOf();
+        lock.lock();
         try {
             Chunk chunk = this.underlyingChunk;
             if (chunk == null) {
@@ -258,7 +276,7 @@ public class ProtoChunk {
             }
             return CascadeBlockBuffer.INSTANCE.flushChunkBlocksOnly(world, chunk);
         } finally {
-            this.chunkLock.unlock();
+            lock.unlock();
         }
     }
 
@@ -289,9 +307,10 @@ public class ProtoChunk {
     }
 
     public Biome getBiome(BlockPos pos, BiomeProvider provider) {
+        java.util.concurrent.locks.ReentrantLock lock = lockOf();
         boolean acquired = false;
         try {
-            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+            acquired = lock.tryLock(50, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -305,7 +324,7 @@ public class ProtoChunk {
                 Biome b = provider != null ? provider.getBiome(pos) : null;
                 return b != null ? b : net.minecraft.init.Biomes.PLAINS;
             } finally {
-                this.chunkLock.unlock();
+                lock.unlock();
             }
         } else {
             Chunk chunk = this.underlyingChunk;
@@ -319,9 +338,10 @@ public class ProtoChunk {
     }
 
     public int getHeight(BlockPos pos) {
+        java.util.concurrent.locks.ReentrantLock lock = lockOf();
         boolean acquired = false;
         try {
-            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+            acquired = lock.tryLock(50, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -333,7 +353,7 @@ public class ProtoChunk {
                 }
                 return 64;
             } finally {
-                this.chunkLock.unlock();
+                lock.unlock();
             }
         } else {
             Chunk chunk = this.underlyingChunk;
@@ -369,9 +389,10 @@ public class ProtoChunk {
     }
 
     public TileEntity getTileEntity(BlockPos pos) {
+        java.util.concurrent.locks.ReentrantLock lock = lockOf();
         boolean acquired = false;
         try {
-            acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+            acquired = lock.tryLock(50, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -383,7 +404,7 @@ public class ProtoChunk {
                 }
                 return null;
             } finally {
-                this.chunkLock.unlock();
+                lock.unlock();
             }
         } else {
             Chunk chunk = this.underlyingChunk;
@@ -406,9 +427,10 @@ public class ProtoChunk {
                 com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().guardsBlockedCount.incrementAndGet();
                 return;
             }
+            java.util.concurrent.locks.ReentrantLock lock = lockOf();
             boolean acquired = false;
             try {
-                acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+                acquired = lock.tryLock(50, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -419,7 +441,7 @@ public class ProtoChunk {
                         chunk.addTileEntity(pos, tileEntity);
                     }
                 } finally {
-                    this.chunkLock.unlock();
+                    lock.unlock();
                 }
             } else {
                 net.minecraft.nbt.NBTTagCompound nbt = new net.minecraft.nbt.NBTTagCompound();
@@ -431,9 +453,10 @@ public class ProtoChunk {
 
     public void addEntity(Entity entity) {
         if (entity != null) {
+            java.util.concurrent.locks.ReentrantLock lock = lockOf();
             boolean acquired = false;
             try {
-                acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
+                acquired = lock.tryLock(50, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -444,7 +467,7 @@ public class ProtoChunk {
                         chunk.addEntity(entity);
                     }
                 } finally {
-                    this.chunkLock.unlock();
+                    lock.unlock();
                 }
             }
         }

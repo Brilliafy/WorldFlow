@@ -57,6 +57,11 @@ public class ModConfig {
         @Config.Name("Fire Chunk Events On Publish")
         public boolean fireChunkEventsOnPublish = true;
 
+        @Config.Comment("Warm OTG biome arrays a batch ahead of the wavefront on two low-priority threads. " +
+                "Bit-identical (same code path); measurably shortens feature-stage biome waits.")
+        @Config.Name("Enable Biome Prefetcher")
+        public boolean enableBiomePrefetcher = true;
+
         @Config.Comment("Enable concurrent OTG/Dregora terrain generation via per-worker ChunkProviderOTG.")
         @Config.Name("Enable Concurrent OTG Terrain")
         public boolean enableOTGParallelTerrain = true;

@@ -372,6 +372,7 @@ public class GenerationScheduler {
         this.neighbourCacheOrder.clear();
         PublishManager.INSTANCE.reset();
         com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer.INSTANCE.clear();
+        com.cleanroommc.worldflow.pipeline.otg.BiomePrefetcher.stop();
         com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext.clearWorldCaches();
     }
 
@@ -452,6 +453,10 @@ public class GenerationScheduler {
     public CompletableFuture<Chunk> requestChunk(WorldServer world, int x, int z, ChunkStatus targetStatus, GenerationPriority priority) {
         awaitQuiesce(world);
         com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext.warmTreeResources(world);
+        if (com.cleanroommc.worldflow.pipeline.otg.BiomePrefetcher.isEnabled()) {
+            com.cleanroommc.worldflow.pipeline.otg.BiomePrefetcher.ensureStarted(world);
+            com.cleanroommc.worldflow.pipeline.otg.BiomePrefetcher.submitAround(x, z);
+        }
         long key = ChunkPos.asLong(x, z);
         totalGenerationsRequested.incrementAndGet();
 

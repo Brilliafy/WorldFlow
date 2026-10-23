@@ -60,6 +60,15 @@ public abstract class ChunkMixin implements IWorldFlowChunk {
         this.worldflow$published = published;
     }
 
+    @org.spongepowered.asm.mixin.Unique
+    private final java.util.concurrent.locks.ReentrantLock worldflow$writeLock =
+            new java.util.concurrent.locks.ReentrantLock();
+
+    @Override
+    public java.util.concurrent.locks.ReentrantLock worldflow$chunkLock() {
+        return this.worldflow$writeLock;
+    }
+
     @Shadow
     @Final
     public int x;

@@ -33,6 +33,30 @@ public final class BiomePrefetcher {
     private BiomePrefetcher() {
     }
 
+    public static boolean isEnabled() {
+        return com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY == null
+                || com.cleanroommc.worldflow.config.ModConfig.CONCURRENCY.enableBiomePrefetcher;
+    }
+
+    /** Starts the pool on first use if the config allows it. Safe from any thread. */
+    public static synchronized void ensureStarted(WorldServer world) {
+        if (isEnabled()) {
+            start(world);
+        }
+    }
+
+    /** Warms the chunk and its 3x3 stencil (the feature stage reads all nine). */
+    public static void submitAround(int chunkX, int chunkZ) {
+        if (pool == null) {
+            return;
+        }
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                submit(new ChunkPos(chunkX + dx, chunkZ + dz));
+            }
+        }
+    }
+
     public static synchronized void start(WorldServer world) {
         if (pool != null || world == null) {
             return;
@@ -65,6 +89,9 @@ public final class BiomePrefetcher {
         long key = ChunkPos.asLong(pos.x, pos.z);
         if (!QUEUED.add(key)) {
             return;
+        }
+        if (QUEUED.size() > 262144) {
+            QUEUED.clear();
         }
         executor.execute(() -> {
             try {
