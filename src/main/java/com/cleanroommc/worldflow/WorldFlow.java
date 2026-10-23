@@ -48,6 +48,7 @@ public class WorldFlow {
         }
         com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().ensureWatchdog();
         com.cleanroommc.worldflow.compat.NoiseThreaderGuard.apply();
+        com.cleanroommc.worldflow.pipeline.gpu.OpenClProbe.probe();
         LOGGER.info("[WorldFlow] Vectorized SIMD-friendly noise calculation engine initialized.");
         LOGGER.info("[WorldFlow] Gentle pre-generator initialised.");
     }

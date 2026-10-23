@@ -264,8 +264,20 @@ public class BenchmarkRunner {
                 }
                 GenerationScheduler.getInstance().registerBatchTargets(targetCoords);
 
+                final boolean prefetch = Boolean.getBoolean("worldflow.prefetchBiomes");
+                if (prefetch) {
+                    com.cleanroommc.worldflow.pipeline.otg.BiomePrefetcher.start(world);
+                }
+                int dispatchIndex = 0;
                 long lastLogMs = System.currentTimeMillis();
                 for (BenchChunkEntry entry : targets) {
+                    if (prefetch && (dispatchIndex & 31) == 0) {
+                        int aheadTo = Math.min(targets.size(), dispatchIndex + 96);
+                        for (int ahead = dispatchIndex; ahead < aheadTo; ahead++) {
+                            com.cleanroommc.worldflow.pipeline.otg.BiomePrefetcher.submit(targetCoords.get(ahead));
+                        }
+                    }
+                    dispatchIndex++;
                     if (finished.get() || !RUNNING.get()) {
                         break;
                     }
@@ -340,6 +352,7 @@ public class BenchmarkRunner {
             } finally {
                 finished.set(true);
                 RUNNING.set(false);
+                com.cleanroommc.worldflow.pipeline.otg.BiomePrefetcher.stop();
                 // Hand control back to the autoscaler now that the deterministic run is over.
                 GenerationWorkerPool.getInstance().enableAutoscale();
             }
