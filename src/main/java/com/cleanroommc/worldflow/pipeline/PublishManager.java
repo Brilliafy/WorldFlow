@@ -161,6 +161,7 @@ public class PublishManager {
             holder.getCarversFuture().complete(existing);
             holder.getWorkerDoneFuture().complete(existing);
             holder.getFuture().complete(existing);
+            GenerationScheduler.getInstance().onChunkPublished(world, holder);
             GenerationScheduler.getInstance().removeInFlight(key);
             GenerationScheduler.getInstance().notifyNeighboursOfCompletion(cx, cz);
             return;
@@ -172,6 +173,11 @@ public class PublishManager {
             chunk = new Chunk(world, cx, cz);
             proto.setUnderlyingChunk(chunk);
         }
+        // Close the write window before the main thread touches the chunk: from this
+        // point workers must stage cross-chunk writes instead of mutating the palette.
+        if (chunk instanceof IWorldFlowChunk) {
+            ((IWorldFlowChunk) chunk).worldflow$setPublished(true);
+        }
 
         try {
             long tPhase = System.nanoTime();
@@ -181,9 +187,11 @@ public class PublishManager {
             }
             this.nanosInsert.addAndGet(System.nanoTime() - tPhase);
 
-            // 3. Flush any staged blocks that were waiting for this chunk
+            // 3. Flush any staged blocks that were waiting for this chunk. Use the
+            //    ProtoChunk lock: a worker may have entered its write path just before
+            //    the published flag flipped.
             tPhase = System.nanoTime();
-            CascadeBlockBuffer.INSTANCE.flushChunk(world, chunk);
+            proto.flushStagedBlocks(world);
             this.nanosFlush.addAndGet(System.nanoTime() - tPhase);
 
             // 3b. Tile-entity atomicity: a TE whose block does not support one (or was replaced
@@ -364,6 +372,12 @@ public class PublishManager {
         } catch (Throwable t) {
             WorldFlow.LOGGER.debug("[WorldFlow] TE hygiene pass failed", t);
         }
+    }
+
+    /** Drops queued work when the world shuts down (singleplayer world reload). */
+    public void reset() {
+        this.pendingPublishQueue.clear();
+        this.tePurgeQueue.clear();
     }
 
     public int getPendingCount() {

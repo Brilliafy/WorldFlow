@@ -333,11 +333,46 @@ public class GenerationScheduler {
         }
     }
 
+    private final java.util.concurrent.atomic.AtomicBoolean watchdogScheduled =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     private GenerationScheduler() {
         // Feed the pool autoscaler with the real pipeline depth (queue alone is misleading).
         GenerationWorkerPool.getInstance().setInFlightSupplier(() -> this.inFlight.size());
-        // Start background Deadlock Watchdog daemon (1s: drives the chunk state machine)
-        GenerationWorkerPool.getInstance().scheduleWithFixedDelay(this::runWatchdogCheck, 1, 1, TimeUnit.SECONDS);
+        ensureWatchdog();
+    }
+
+    /**
+     * (Re)starts the watchdog on the current worker pool. Called on client startup and on
+     * every world start, because singleplayer shuts the pool down when leaving a world.
+     */
+    public void ensureWatchdog() {
+        if (this.watchdogScheduled.compareAndSet(false, true)) {
+            try {
+                GenerationWorkerPool.getInstance().scheduleWithFixedDelay(this::runWatchdogCheck, 1, 1, TimeUnit.SECONDS);
+            } catch (Throwable t) {
+                this.watchdogScheduled.set(false);
+                WorldFlow.LOGGER.warn("[WorldFlow] Failed to start the generation watchdog", t);
+            }
+        }
+    }
+
+    /**
+     * Drops every runtime reference after the world (or integrated server) shuts down, so
+     * a singleplayer world reload starts clean and no ProtoChunk/world object is pinned.
+     */
+    public void resetRuntimeState() {
+        this.watchdogScheduled.set(false);
+        this.inFlight.clear();
+        this.pendingRequestQueue.clear();
+        this.pendingRequests.clear();
+        this.batchTargets.clear();
+        this.retainedProtos.clear();
+        this.neighbourCache.clear();
+        this.neighbourCacheOrder.clear();
+        PublishManager.INSTANCE.reset();
+        com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer.INSTANCE.clear();
+        com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext.clearWorldCaches();
     }
 
     public CompletableFuture<Chunk> requestChunk(WorldServer world, int x, int z, GenerationPriority priority) {
@@ -786,8 +821,16 @@ public class GenerationScheduler {
         WorldServer world = holder.getWorld();
         int cx = holder.getPos().x;
         int cz = holder.getPos().z;
+        // The 3x3 CARVERS barrier below is the correctness boundary; the phase-dep
+        // counter only orders the wavefront. Wait briefly for it, then proceed: an
+        // earlier-phase halo/target may never publish, and the old unbounded wait
+        // stranded the wavefront tail.
         if (holder.getPendingPhaseDeps() > 0) {
-            return;
+            holder.markPhaseDepWaitStart();
+            long waited = System.nanoTime() - holder.getPhaseDepWaitStartNanos();
+            if (waited < 10_000_000_000L) {
+                return;
+            }
         }
 
         // Best-effort neighbourhood: whatever already exists. We deliberately do NOT block on
@@ -951,8 +994,7 @@ public class GenerationScheduler {
             // Apply staged structure blocks here, on the worker, while the chunk is still
             // private. Doing it in publishChunk cost ~10-36ms of main-thread time per chunk.
             try {
-                com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer.INSTANCE
-                        .flushChunkBlocksOnly(world, proto.getChunk());
+                proto.flushStagedBlocks(world);
             } catch (Throwable flushErr) {
                 WorldFlow.LOGGER.debug("[WorldFlow] Off-thread block flush failed for chunk [{}, {}]", pos.x, pos.z, flushErr);
             }

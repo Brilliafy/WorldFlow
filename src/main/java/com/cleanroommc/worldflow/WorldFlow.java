@@ -31,6 +31,7 @@ public class WorldFlow {
     @Mod.EventHandler
     public void preInit(FMLPreInitializationEvent event) {
         LOGGER.info("World Flow initialized. Protecting world generation from recursive chunk cascades.");
+        MinecraftForge.EVENT_BUS.register(com.cleanroommc.worldflow.compat.NoiseThreaderGuard.class);
     }
 
     @Mod.EventHandler
@@ -45,18 +46,30 @@ public class WorldFlow {
         } else {
             LOGGER.info("[WorldFlow] True parallel staged generation pipeline DISABLED (vanilla inline synchronous chunk generation).");
         }
+        com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().ensureWatchdog();
+        com.cleanroommc.worldflow.compat.NoiseThreaderGuard.apply();
         LOGGER.info("[WorldFlow] Vectorized SIMD-friendly noise calculation engine initialized.");
         LOGGER.info("[WorldFlow] Gentle pre-generator initialised.");
     }
 
     @Mod.EventHandler
+    public void serverStarted(net.minecraftforge.fml.common.event.FMLServerStartedEvent event) {
+        com.cleanroommc.worldflow.compat.NoiseThreaderGuard.apply();
+    }
+
+    @Mod.EventHandler
     public void serverStarting(FMLServerStartingEvent event) {
         event.registerServerCommand(new CommandWorldFlow());
+        // Singleplayer: the pool was shut down when the previous world was closed.
+        // Re-arm the watchdog and keep the runtime state fresh for this world.
+        com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().ensureWatchdog();
+        com.cleanroommc.worldflow.compat.NoiseThreaderGuard.apply();
     }
 
     @Mod.EventHandler
     public void serverStopping(net.minecraftforge.fml.common.event.FMLServerStoppingEvent event) {
         LOGGER.info("[WorldFlow] Shutting down parallel generation worker pools.");
         com.cleanroommc.worldflow.pipeline.GenerationWorkerPool.getInstance().shutdown();
+        com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().resetRuntimeState();
     }
 }

@@ -244,6 +244,24 @@ public class ProtoChunk {
      * Creates the TileEntity eagerly: Roguelike places a chest and immediately calls
      * setLootTable, and a null TE here silently dropped the loot table.
      */
+    /**
+     * Applies blocks staged for this chunk while holding the same lock as block
+     * writers. Without the lock the owner's flush could resize the block-state
+     * palette concurrently with a cross-chunk writer.
+     */
+    public int flushStagedBlocks(net.minecraft.world.WorldServer world) {
+        this.chunkLock.lock();
+        try {
+            Chunk chunk = this.underlyingChunk;
+            if (chunk == null) {
+                return 0;
+            }
+            return CascadeBlockBuffer.INSTANCE.flushChunkBlocksOnly(world, chunk);
+        } finally {
+            this.chunkLock.unlock();
+        }
+    }
+
     private void stageBlockWrite(BlockPos pos, IBlockState state, String reason) {
         stageBlockWrite(pos, state, null, reason);
     }

@@ -128,6 +128,16 @@ public class OTGParallelContext {
         return generator.getBiomes(array, x, z, sizeX, sizeZ, type);
     }
 
+    /** Releases all world-scoped caches (singleplayer world reload / server stop). */
+    public static void clearWorldCaches() {
+        BIOME_ARRAY_CACHE.clear();
+        OTG_CHUNK_BIOMES.clear();
+        TREE_WARMED.clear();
+        CURRENT_BUFFER.remove();
+        THREAD_LOCAL_SPAWNERS.remove();
+        THREAD_LOCAL_PROVIDERS.remove();
+    }
+
     /** Worlds whose OTG tree resources were already pre-loaded. */
     private static final java.util.Map<net.minecraft.world.WorldServer, Boolean> TREE_WARMED =
             java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
@@ -141,6 +151,7 @@ public class OTGParallelContext {
         if (world == null || TREE_WARMED.putIfAbsent(world, Boolean.TRUE) != null) {
             return;
         }
+        com.cleanroommc.worldflow.compat.NoiseThreaderGuard.apply();
         boolean ok = false;
         try {
             if (!(com.pg85.otg.OTG.getEngine() instanceof com.pg85.otg.forge.ForgeEngine)) {

@@ -42,6 +42,9 @@ public class StatusHolder implements Comparable<StatusHolder> {
      *  can re-run the exact same population instead of publishing a partial chunk. */
     private volatile java.util.Map<Long, ProtoChunk> featureNeighbourhood;
 
+    /** First time the 3x3 phase-dep gate blocked this chunk (advisory timeout). */
+    private volatile long phaseDepWaitStartNanos = 0L;
+
     /** Guards the one allowed main-thread regeneration retry. */
     private final java.util.concurrent.atomic.AtomicBoolean mainThreadRetry =
             new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -91,6 +94,16 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     public void setFeatureNeighbourhood(java.util.Map<Long, ProtoChunk> neighbourhood) {
         this.featureNeighbourhood = neighbourhood;
+    }
+
+    public long getPhaseDepWaitStartNanos() {
+        return this.phaseDepWaitStartNanos;
+    }
+
+    public void markPhaseDepWaitStart() {
+        if (this.phaseDepWaitStartNanos == 0L) {
+            this.phaseDepWaitStartNanos = System.nanoTime();
+        }
     }
 
     /** @return true only for the first caller, i.e. the one retry we allow. */
