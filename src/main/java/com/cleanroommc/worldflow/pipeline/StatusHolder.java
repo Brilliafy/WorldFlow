@@ -38,6 +38,22 @@ public class StatusHolder implements Comparable<StatusHolder> {
     private volatile long featuresScheduledAtNanos = 0L;
     private volatile String lastWorkerName = "none";
 
+    /** 3x3 stencil snapshot used by the feature stage; kept so a main-thread retry
+     *  can re-run the exact same population instead of publishing a partial chunk. */
+    private volatile java.util.Map<Long, ProtoChunk> featureNeighbourhood;
+
+    /** Guards the one allowed main-thread regeneration retry. */
+    private final java.util.concurrent.atomic.AtomicBoolean mainThreadRetry =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /** 4-phase parity: ((x & 1) << 1) | (z & 1). */
+    private final int phase;
+    /** Earlier-phase target neighbours in this chunk's 3x3 stencil. */
+    private final AtomicInteger pendingPhaseDeps = new AtomicInteger(0);
+    /** Target chunks in this chunk's 3x3 stencil whose Stage 3/4 results may read it. */
+    private final AtomicInteger stencilTargetRefs = new AtomicInteger(0);
+    private final java.util.concurrent.atomic.AtomicBoolean stencilReleased = new java.util.concurrent.atomic.AtomicBoolean(false);
+
     public StatusHolder(WorldServer world, int x, int z, ChunkStatus targetStatus, GenerationPriority priority) {
         this.world = world;
         this.pos = new ChunkPos(x, z);
@@ -45,6 +61,7 @@ public class StatusHolder implements Comparable<StatusHolder> {
         this.targetStatus = targetStatus;
         this.initialPriority = priority != null ? priority : GenerationPriority.BACKGROUND;
         this.protoChunk = new ProtoChunk(world, x, z);
+        this.phase = ((x & 1) << 1) | (z & 1);
         this.submissionTimeNanos = System.nanoTime();
         this.priorityScore.set(this.initialPriority.getWeight() * 10000);
         if (this.initialPriority == GenerationPriority.IMMEDIATE || this.initialPriority == GenerationPriority.PREGENERATOR) {
@@ -66,6 +83,19 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     public ProtoChunk getProtoChunk() {
         return this.protoChunk;
+    }
+
+    public java.util.Map<Long, ProtoChunk> getFeatureNeighbourhood() {
+        return this.featureNeighbourhood;
+    }
+
+    public void setFeatureNeighbourhood(java.util.Map<Long, ProtoChunk> neighbourhood) {
+        this.featureNeighbourhood = neighbourhood;
+    }
+
+    /** @return true only for the first caller, i.e. the one retry we allow. */
+    public boolean markMainThreadRetry() {
+        return this.mainThreadRetry.compareAndSet(false, true);
     }
 
     public CompletableFuture<Chunk> getFuture() {
@@ -251,6 +281,42 @@ public class StatusHolder implements Comparable<StatusHolder> {
 
     public boolean isFeaturesRunning() {
         return this.featuresRunning.get();
+    }
+
+    public int getPhase() {
+        return this.phase;
+    }
+
+    public int getPendingPhaseDeps() {
+        return this.pendingPhaseDeps.get();
+    }
+
+    public void initPendingPhaseDeps(int count) {
+        this.pendingPhaseDeps.set(Math.max(0, count));
+    }
+
+    public int decrementPhaseDeps() {
+        return this.pendingPhaseDeps.decrementAndGet();
+    }
+
+    public int getStencilTargetRefs() {
+        return this.stencilTargetRefs.get();
+    }
+
+    public void initStencilTargetRefs(int count) {
+        this.stencilTargetRefs.set(Math.max(0, count));
+    }
+
+    public int decrementStencilTargetRefs() {
+        return this.stencilTargetRefs.decrementAndGet();
+    }
+
+    public boolean markStencilReleased() {
+        return this.stencilReleased.compareAndSet(false, true);
+    }
+
+    public boolean isStencilReleased() {
+        return this.stencilReleased.get();
     }
 
     public String getLastWorkerName() {

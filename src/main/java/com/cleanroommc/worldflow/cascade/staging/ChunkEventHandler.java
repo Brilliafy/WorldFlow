@@ -37,6 +37,19 @@ public class ChunkEventHandler {
         }
     }
 
+    /**
+     * Staged cross-chunk writes may target a chunk that was published earlier. Flush
+     * them during unload, which runs before the chunk is serialised, so a late write is
+     * never dropped just because the chunk left the loaded set.
+     */
+    @SubscribeEvent(priority = EventPriority.HIGHEST)
+    public static void onChunkUnload(ChunkEvent.Unload event) {
+        if (event.getWorld().isRemote || !(event.getWorld() instanceof WorldServer)) {
+            return;
+        }
+        CascadeBlockBuffer.INSTANCE.flushChunkBlocksOnly((WorldServer) event.getWorld(), event.getChunk());
+    }
+
     @SubscribeEvent(priority = EventPriority.LOWEST)
     public static void onChunkLoad(ChunkEvent.Load event) {
         if (event.getWorld().isRemote || !(event.getWorld() instanceof WorldServer)) {
@@ -55,6 +68,7 @@ public class ChunkEventHandler {
         }
 
         WorldServer worldServer = (WorldServer) event.getWorld();
+        CascadeBlockBuffer.INSTANCE.flushAll(worldServer);
         GenerationScheduler.getInstance().quiesceAndDrain(worldServer, 60000L);
 
         if (ModConfig.GENERAL.persistStagedBlocks) {

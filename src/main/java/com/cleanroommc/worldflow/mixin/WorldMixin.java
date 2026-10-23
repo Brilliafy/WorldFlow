@@ -15,7 +15,10 @@ import net.minecraft.world.WorldServer;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.chunk.Chunk;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Mutable;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import net.minecraft.world.EnumSkyBlock;
@@ -27,6 +30,21 @@ public abstract class WorldMixin {
 
     @Shadow
     public boolean isRemote;
+
+    @Shadow
+    @Final
+    @Mutable
+    public java.util.List<Entity> loadedEntityList;
+
+    /**
+     * Feature workers read the loaded-entity list (spawn checks, mob caps) while the
+     * server thread adds/removes entities. Use a snapshot-iterating implementation so
+     * those readers cannot throw ConcurrentModificationException.
+     */
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void worldflow$safeEntityList(CallbackInfo ci) {
+        this.loadedEntityList = new com.cleanroommc.worldflow.pipeline.isolation.WorldFlowEntityList(256);
+    }
 
     @Inject(method = "getBlockState(Lnet/minecraft/util/math/BlockPos;)Lnet/minecraft/block/state/IBlockState;",
             at = @At("HEAD"),
@@ -203,6 +221,24 @@ public abstract class WorldMixin {
                     tileEntity.getClass().getName(), pos, state.getBlock().getRegistryName());
             ci.cancel();
         }
+    }
+
+    /**
+     * @author WorldFlow
+     * @reason iterate a stable snapshot; the live list is mutated by the server thread
+     *         while feature workers run spawn checks
+     */
+    @Overwrite
+    public int countEntities(Class<?> entityType) {
+        int i = 0;
+        for (Entity entity : this.loadedEntityList) {
+            if ((!(entity instanceof net.minecraft.entity.EntityLiving)
+                    || !((net.minecraft.entity.EntityLiving) entity).isNoDespawnRequired())
+                    && entityType.isAssignableFrom(entity.getClass())) {
+                ++i;
+            }
+        }
+        return i;
     }
 
     @Inject(method = "spawnEntity",

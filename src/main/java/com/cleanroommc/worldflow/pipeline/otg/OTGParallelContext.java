@@ -117,6 +117,76 @@ public class OTGParallelContext {
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final int BIOME_ARRAY_CACHE_MAX = 16384;
 
+    /**
+     * All biome generators share one instance; the patched OTG layer chain keeps its
+     * seed scratch per thread and the cached generator keeps a per-thread chunk map,
+     * so this is lock-free now.
+     */
+    public static int[] getBiomesSynchronized(com.pg85.otg.generator.biome.BiomeGenerator generator,
+                                              int[] array, int x, int z, int sizeX, int sizeZ,
+                                              com.pg85.otg.generator.biome.OutputType type) {
+        return generator.getBiomes(array, x, z, sizeX, sizeZ, type);
+    }
+
+    /** Worlds whose OTG tree resources were already pre-loaded. */
+    private static final java.util.Map<net.minecraft.world.WorldServer, Boolean> TREE_WARMED =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<>());
+
+    /**
+     * Eagerly performs OTG's one-time {@code TreeGen.loadTrees} work on the calling
+     * thread, before the generation pools start accepting chunks. The loaded arrays
+     * are read-only afterwards, so workers never race on lazy initialization.
+     */
+    public static void warmTreeResources(net.minecraft.world.WorldServer world) {
+        if (world == null || TREE_WARMED.putIfAbsent(world, Boolean.TRUE) != null) {
+            return;
+        }
+        boolean ok = false;
+        try {
+            if (!(com.pg85.otg.OTG.getEngine() instanceof com.pg85.otg.forge.ForgeEngine)) {
+                return;
+            }
+            ForgeWorld forgeWorld = ((com.pg85.otg.forge.ForgeEngine) com.pg85.otg.OTG.getEngine()).getWorld(world);
+            if (forgeWorld == null) {
+                return;
+            }
+            com.pg85.otg.network.ConfigProvider configs = forgeWorld.getConfigs();
+            if (configs == null) {
+                return;
+            }
+            com.pg85.otg.common.LocalBiome[] biomes = configs.getBiomeArrayByOTGId();
+            if (biomes == null) {
+                return;
+            }
+            String worldName = forgeWorld.getName();
+            java.util.Set<Object> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            int warmed = 0;
+            for (com.pg85.otg.common.LocalBiome biome : biomes) {
+                if (biome == null) {
+                    continue;
+                }
+                com.pg85.otg.configuration.biome.BiomeConfig config = biome.getBiomeConfig();
+                if (config == null || config.resourceSequence == null) {
+                    continue;
+                }
+                for (Object resource : config.resourceSequence) {
+                    if (resource instanceof WorldFlowTreeState && seen.add(resource)) {
+                        ((WorldFlowTreeState) resource).worldflow$warmLoad(worldName);
+                        warmed++;
+                    }
+                }
+            }
+            ok = true;
+            WorldFlow.LOGGER.info("[WorldFlow] Pre-warmed {} OTG tree resource(s) for world {}", warmed, worldName);
+        } catch (Throwable t) {
+            WorldFlow.LOGGER.warn("[WorldFlow] OTG tree pre-warm failed; safe lazy init will be used", t);
+        } finally {
+            if (!ok) {
+                TREE_WARMED.remove(world);
+            }
+        }
+    }
+
     public static short[] getChunkOTGBiomes(ForgeWorld world, int chunkX, int chunkZ) {
         if (world == null) return null;
         long key = ChunkPos.asLong(chunkX, chunkZ);
@@ -135,7 +205,7 @@ public class OTGParallelContext {
         if (cached != null) return cached;
         // CachedBiomeGeneratorMixin gives each worker a thread-local read-through cache;
         // the generator monitor is no longer needed here.
-        biomeArray = biomeGenerator.getBiomes(null, chunkX * 16, chunkZ * 16, 16, 16,
+        biomeArray = getBiomesSynchronized(biomeGenerator, null, chunkX * 16, chunkZ * 16, 16, 16,
                 com.pg85.otg.generator.biome.OutputType.DEFAULT_FOR_WORLD);
         if (biomeArray == null || biomeArray.length < 256) {
             return null;

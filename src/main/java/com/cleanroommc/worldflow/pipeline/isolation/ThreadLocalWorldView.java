@@ -176,6 +176,28 @@ public class ThreadLocalWorldView {
 
         // Check if loaded in live world (e.g. post-publish late write)
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
+        if (loaded instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk
+                && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) loaded).worldflow$isPublished()) {
+            // Never mutate a published chunk from a worker: the server thread iterates
+            // its block-state palette and tile-entity map (seen as IntIdentityHashBiMap
+            // ArrayIndexOutOfBoundsException). Stage for the main-thread flush instead.
+            net.minecraft.nbt.NBTTagCompound teNbt = null;
+            if (state.getBlock().hasTileEntity(state)) {
+                TileEntity stagedTe = state.getBlock().createTileEntity(world, state);
+                if (stagedTe != null) {
+                    stagedTe.setWorld(world);
+                    stagedTe.setPos(pos);
+                    CascadeBlockBuffer.INSTANCE.stageTileEntity(world, pos, stagedTe);
+                    teNbt = stagedTe.writeToNBT(new net.minecraft.nbt.NBTTagCompound());
+                } else {
+                    CascadeBlockBuffer.INSTANCE.stageTileEntity(world, pos, null);
+                }
+            } else {
+                CascadeBlockBuffer.INSTANCE.stageTileEntity(world, pos, null);
+            }
+            CascadeBlockBuffer.INSTANCE.stageBlock(world, pos, state, teNbt, "PublishedWorldView");
+            return true;
+        }
         if (loaded != null) {
             synchronized (loaded) {
                 IBlockState res = loaded.setBlockState(pos, state);
@@ -412,6 +434,11 @@ public class ThreadLocalWorldView {
         }
 
         Chunk loaded = world.getChunkProvider().getLoadedChunk(chunkX, chunkZ);
+        if (loaded instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk
+                && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) loaded).worldflow$isPublished()) {
+            CascadeBlockBuffer.INSTANCE.stageTileEntity(world, pos, tileEntity);
+            return true;
+        }
         if (loaded != null) {
             synchronized (loaded) {
                 IBlockState loadedState = loaded.getBlockState(pos);

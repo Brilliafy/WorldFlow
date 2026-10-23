@@ -118,6 +118,23 @@ public class ProtoChunk {
         return this.underlyingChunk;
     }
 
+    /**
+     * Discards the current block data so the chunk can be regenerated from scratch.
+     * Only used by the (rare) main-thread retry path after an off-thread failure;
+     * publishing a partially decorated chunk is never allowed.
+     */
+    public void resetForRegeneration() {
+        this.chunkLock.lock();
+        try {
+            this.underlyingChunk = new Chunk(this.world, this.x, this.z);
+            this.status.set(ChunkStatus.EMPTY);
+            this.biomesFilled = false;
+            this.ownerThread = null;
+        } finally {
+            this.chunkLock.unlock();
+        }
+    }
+
     public void setUnderlyingChunk(Chunk chunk) {
         if (chunk != null) {
             this.chunkLock.lock();
@@ -150,20 +167,33 @@ public class ProtoChunk {
     }
 
     public boolean setBlockState(BlockPos pos, IBlockState state) {
+        return setBlockState(pos, state, null);
+    }
+
+    /**
+     * Writes a block and applies the supplied tile-entity NBT (OTG BO3/BO4 metadata).
+     * All writes to a chunk that a worker does not own must go through here: the direct
+     * {@link Chunk#setBlockState} path corrupts the block-state palette and the
+     * tile-entity map when two workers (or a worker and the server thread) overlap.
+     */
+    public boolean setBlockState(BlockPos pos, IBlockState state, net.minecraft.nbt.NBTTagCompound teNbt) {
         if (pos.getY() < 0 || pos.getY() >= 256 || state == null) {
             return false;
         }
-        if (ownedByCurrentThread()) {
-            Chunk chunk = this.underlyingChunk;
-            if (chunk == null) {
-                return false;
-            }
-            IBlockState oldState = chunk.setBlockState(pos, state);
-            if (oldState != null) {
-                updateTileEntity(chunk, pos, oldState, state);
-            }
-            return oldState != null;
+        // Once a chunk is published it is part of the live world and the server thread
+        // iterates its tile-entity map (NuclearCraft does this every world tick). Writing
+        // into it from a feature worker corrupts that HashMap, so such writes are staged
+        // and flushed by the main thread at a safe point instead.
+        Chunk live = this.underlyingChunk;
+        if (live instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk
+                && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) live).worldflow$isPublished()) {
+            stageBlockWrite(pos, state, teNbt, "PublishedCrossChunkWrite");
+            return true;
         }
+        // Always take the chunk lock, including for the owning worker: cross-chunk
+        // writers (Quark stone gen, structures) can target a chunk that its owner is
+        // decorating. The owner's old lock-free fast path raced those writers on the
+        // block-state palette. ReentrantLock keeps owner re-entry working.
         boolean acquired = false;
         try {
             acquired = this.chunkLock.tryLock(50, TimeUnit.MILLISECONDS);
@@ -172,40 +202,72 @@ public class ProtoChunk {
         }
         if (acquired) {
             try {
-                Chunk chunk = this.underlyingChunk;
-                if (chunk == null) {
-                    return false;
-                }
-                IBlockState oldState = chunk.setBlockState(pos, state);
-                if (oldState != null) {
-                    updateTileEntity(chunk, pos, oldState, state);
-                }
-                return oldState != null;
+                return applyBlockWrite(pos, state, teNbt);
             } finally {
                 this.chunkLock.unlock();
             }
-        } else {
-            // Deadlock prevention (e.g. cross-chunk cycle between adjacent workers):
-            // Fall back to staging in CascadeBlockBuffer to be flushed deterministically at publish time.
-            // Create the TileEntity now: Roguelike places a chest and immediately calls setLootTable;
-            // a null TE here silently dropped the loot table.
-            net.minecraft.nbt.NBTTagCompound teNbt = null;
-            if (state.getBlock().hasTileEntity(state)) {
-                net.minecraft.tileentity.TileEntity te = state.getBlock().createTileEntity(this.world, state);
-                if (te != null) {
-                    te.setWorld(this.world);
-                    te.setPos(pos);
-                    CascadeBlockBuffer.INSTANCE.stageTileEntity(this.world, pos, te);
-                    teNbt = te.writeToNBT(new net.minecraft.nbt.NBTTagCompound());
-                } else {
-                    CascadeBlockBuffer.INSTANCE.stageTileEntity(this.world, pos, null);
+        }
+        // Deadlock prevention (e.g. cross-chunk cycle between adjacent workers):
+        // fall back to staging for a deterministic main-thread flush.
+        stageBlockWrite(pos, state, teNbt, "ContendedCrossChunkLock");
+        return true;
+    }
+
+    private boolean applyBlockWrite(BlockPos pos, IBlockState state, net.minecraft.nbt.NBTTagCompound teNbt) {
+        Chunk chunk = this.underlyingChunk;
+        if (chunk == null) {
+            return false;
+        }
+        IBlockState oldState = chunk.setBlockState(pos, state);
+        if (oldState != null) {
+            updateTileEntity(chunk, pos, oldState, state);
+            if (teNbt != null) {
+                net.minecraft.tileentity.TileEntity te = chunk.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
+                if (te == null && state.getBlock().hasTileEntity(state)) {
+                    te = state.getBlock().createTileEntity(this.world, state);
+                    if (te != null) {
+                        te.setWorld(this.world);
+                        te.setPos(pos);
+                        chunk.addTileEntity(pos, te);
+                    }
                 }
+                if (te != null) {
+                    te.readFromNBT(teNbt);
+                }
+            }
+        }
+        return oldState != null;
+    }
+
+    /**
+     * Stages a block (and its tile entity, if any) for the main-thread flush.
+     * Creates the TileEntity eagerly: Roguelike places a chest and immediately calls
+     * setLootTable, and a null TE here silently dropped the loot table.
+     */
+    private void stageBlockWrite(BlockPos pos, IBlockState state, String reason) {
+        stageBlockWrite(pos, state, null, reason);
+    }
+
+    private void stageBlockWrite(BlockPos pos, IBlockState state,
+                                 net.minecraft.nbt.NBTTagCompound explicitTeNbt, String reason) {
+        net.minecraft.nbt.NBTTagCompound teNbt = explicitTeNbt;
+        if (state.getBlock().hasTileEntity(state)) {
+            net.minecraft.tileentity.TileEntity te = state.getBlock().createTileEntity(this.world, state);
+            if (te != null) {
+                te.setWorld(this.world);
+                te.setPos(pos);
+                if (explicitTeNbt != null) {
+                    te.readFromNBT(explicitTeNbt);
+                }
+                CascadeBlockBuffer.INSTANCE.stageTileEntity(this.world, pos, te);
+                teNbt = te.writeToNBT(new net.minecraft.nbt.NBTTagCompound());
             } else {
                 CascadeBlockBuffer.INSTANCE.stageTileEntity(this.world, pos, null);
             }
-            CascadeBlockBuffer.INSTANCE.stageBlock(this.world, pos, state, teNbt, "ContendedCrossChunkLock");
-            return true;
+        } else {
+            CascadeBlockBuffer.INSTANCE.stageTileEntity(this.world, pos, null);
         }
+        CascadeBlockBuffer.INSTANCE.stageBlock(this.world, pos, state, teNbt, reason);
     }
 
     public Biome getBiome(BlockPos pos, BiomeProvider provider) {
@@ -313,6 +375,12 @@ public class ProtoChunk {
 
     public void addTileEntity(BlockPos pos, TileEntity tileEntity) {
         if (tileEntity != null) {
+            Chunk live = this.underlyingChunk;
+            if (live instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk
+                    && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) live).worldflow$isPublished()) {
+                CascadeBlockBuffer.INSTANCE.stageTileEntity(this.world, pos, tileEntity);
+                return;
+            }
             IBlockState state = getBlockState(pos);
             if (state == null || !state.getBlock().hasTileEntity(state)) {
                 com.cleanroommc.worldflow.WorldFlow.LOGGER.warn("[WorldFlow] ProtoChunk TE Atomicity Guard: Rejected {} at {} because block is {}",

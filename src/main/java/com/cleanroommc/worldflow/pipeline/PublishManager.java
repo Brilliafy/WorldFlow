@@ -108,6 +108,9 @@ public class PublishManager {
             publishedCount++;
         }
 
+        // Cross-chunk writes aimed at already-published chunks are staged; apply them
+        // here so the live chunk converges within a tick instead of at save time.
+        CascadeBlockBuffer.INSTANCE.flushAll(world);
         CascadeBlockBuffer.INSTANCE.flushStagedTicksForLoadedChunks(world);
         CascadeBlockBuffer.INSTANCE.flushStagedEntitiesForLoadedChunks(world);
 
@@ -272,7 +275,8 @@ public class PublishManager {
             // decoration. Evicting it on publish forced neighbours to regenerate base terrain.
             GenerationScheduler.getInstance().checkLogMetrics();
 
-            // 8. Cleanup from in-flight tracker and notify neighbours
+            // 8. Release the target-stencil reference before removing the holder.
+            GenerationScheduler.getInstance().onChunkPublished(world, holder);
             GenerationScheduler.getInstance().removeInFlight(key);
             GenerationScheduler.getInstance().notifyNeighboursOfCompletion(cx, cz);
         }

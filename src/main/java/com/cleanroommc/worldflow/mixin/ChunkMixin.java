@@ -99,6 +99,14 @@ public abstract class ChunkMixin implements IWorldFlowChunk {
         if (tileEntity == null) {
             return;
         }
+        net.minecraft.world.chunk.Chunk self = (net.minecraft.world.chunk.Chunk) (Object) this;
+        if (com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating()
+                && ((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) self).worldflow$isPublished()) {
+            com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer.INSTANCE
+                    .stageTileEntity(self.getWorld(), pos, tileEntity);
+            ci.cancel();
+            return;
+        }
         // Final net: mods/structures sometimes add a TE directly to the chunk. If the block at
         // that position cannot own one (e.g. bedrock), refuse - otherwise the world TE list
         // carries a stale entry that crashes nuclearcraft/rustic on the next tick.

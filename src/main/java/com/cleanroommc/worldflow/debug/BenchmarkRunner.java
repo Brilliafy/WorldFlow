@@ -12,6 +12,7 @@ import net.minecraft.command.ICommandSender;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.text.TextComponentString;
 import net.minecraft.util.text.TextFormatting;
+import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.WorldServer;
 import net.minecraft.world.chunk.Chunk;
 
@@ -249,98 +250,58 @@ public class BenchmarkRunner {
                 watchdogThread.setDaemon(true);
                 watchdogThread.start();
 
-                // Stage 1 used to prime the entire radius+1 square before any features ran.
-                // That breadth-first burst allocated thousands of ProtoChunks and OTG
-                // buffers that survived until the batch ended. Base terrain is now requested
-                // on demand by the 3x3 feature barrier, so only the active wavefront is live.
-
-                // Stage 2: Partition target chunks into 4 disjoint spatial stride phases
-                @SuppressWarnings("unchecked")
-                List<BenchChunkEntry>[] stridePhases = new List[4];
-                for (int i = 0; i < 4; i++) stridePhases[i] = new ArrayList<>();
+                // Row-major 2D wavefront. No phase barrier: the scheduler's local
+                // 3x3 phase DAG decides when a chunk's features may start.
+                List<BenchChunkEntry> targets = new ArrayList<>(totalChunks);
+                List<ChunkPos> targetCoords = new ArrayList<>(totalChunks);
                 for (int dx = -radius; dx <= radius; dx++) {
                     for (int dz = -radius; dz <= radius; dz++) {
                         int x = centerX + dx;
                         int z = centerZ + dz;
-                        int p = ((x & 1) << 1) | (z & 1);
-                        stridePhases[p].add(new BenchChunkEntry(x, z, null));
+                        targets.add(new BenchChunkEntry(x, z, null));
+                        targetCoords.add(new ChunkPos(x, z));
                     }
                 }
+                GenerationScheduler.getInstance().registerBatchTargets(targetCoords);
 
-                // Stage 3: Dispatch phases sequentially with non-overlapping 3x3 population windows
                 long lastLogMs = System.currentTimeMillis();
-                for (int p = 0; p < 4; p++) {
+                for (BenchChunkEntry entry : targets) {
                     if (finished.get() || !RUNNING.get()) {
                         break;
                     }
-
-                    List<CompletableFuture<Chunk>> phaseFutures = new ArrayList<>(stridePhases[p].size());
-                    for (BenchChunkEntry entry : stridePhases[p]) {
-                        if (finished.get() || !RUNNING.get()) {
+                    while (!finished.get() && RUNNING.get()
+                            && GenerationScheduler.getInstance().getInFlightCount() >= maxInFlight) {
+                        try {
+                            Thread.sleep(2);
+                        } catch (InterruptedException ignored) {
                             break;
-                        }
-
-                        while (!finished.get() && RUNNING.get() && GenerationScheduler.getInstance().getInFlightCount() >= maxInFlight) {
-                            try {
-                                Thread.sleep(2);
-                            } catch (InterruptedException ignored) {
-                                break;
-                            }
-                        }
-                        if (finished.get() || !RUNNING.get()) {
-                            break;
-                        }
-
-                        entry.future = GenerationScheduler.getInstance().requestChunk(
-                                world, entry.x, entry.z, ChunkStatus.FULL, GenerationPriority.IMMEDIATE
-                        );
-                        entries.add(entry);
-                        if (entry.future != null) {
-                            phaseFutures.add(entry.future);
                         }
                     }
+                    if (finished.get() || !RUNNING.get()) {
+                        break;
+                    }
+                    entry.future = GenerationScheduler.getInstance().requestChunk(
+                            world, entry.x, entry.z, ChunkStatus.FULL, GenerationPriority.IMMEDIATE);
+                    entries.add(entry);
 
-                    // Await completion of this disjoint phase before moving to next phase
-                    while (!finished.get() && RUNNING.get()) {
-                        boolean allPhaseDone = true;
-                        for (CompletableFuture<Chunk> pf : phaseFutures) {
-                            if (!pf.isDone()) {
-                                allPhaseDone = false;
-                                break;
+                    long now = System.currentTimeMillis();
+                    if (now - lastLogMs >= 2000L) {
+                        lastLogMs = now;
+                        int completed = 0;
+                        for (BenchChunkEntry e : entries) {
+                            if (e.future != null && e.future.isDone()) {
+                                completed++;
                             }
                         }
-                        if (allPhaseDone) {
-                            break;
-                        }
-
-                        long now = System.currentTimeMillis();
-                        if (now - lastLogMs >= 2000L) {
-                            lastLogMs = now;
-                            int completed = 0;
-                            for (BenchChunkEntry e : entries) {
-                                if (e.future != null && e.future.isDone()) {
-                                    completed++;
-                                }
-                            }
-                            double elapsedSec = Math.max(0.1, (now - startTimeMs) / 1000.0);
-                            double pct = (completed * 100.0) / totalChunks;
-                            double currentRate = completed / elapsedSec;
-                            send(server, sender, TextFormatting.AQUA + String.format(
-                                    "[WorldFlow Bench] Phase %d/4 | Progress: %d/%d (%.1f%%) | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Workers: base=%d feat=%d | Elapsed: %.1fs",
-                                    p + 1, completed, totalChunks, pct, currentRate,
-                                    GenerationScheduler.getInstance().getInFlightCount(),
-                                    GenerationWorkerPool.getInstance().getQueueSize(),
-                                    GenerationWorkerPool.getInstance().getBaseGenWorkerCount(),
-                                    GenerationWorkerPool.getInstance().getFeaturesWorkerCount(),
-                                    elapsedSec
-                            ));
-                        }
-
-                        try {
-                            Thread.sleep(25);
-                        } catch (InterruptedException e) {
-                            break;
-                        }
+                        double elapsedSec = Math.max(0.1, (now - startTimeMs) / 1000.0);
+                        send(server, sender, TextFormatting.AQUA + String.format(
+                                "[WorldFlow Bench] Wavefront | Progress: %d/%d | Rate: %.1f chunks/s | In-Flight: %d | Queued: %d | Workers: base=%d feat=%d | Elapsed: %.1fs",
+                                completed, totalChunks, completed / elapsedSec,
+                                GenerationScheduler.getInstance().getInFlightCount(),
+                                GenerationWorkerPool.getInstance().getQueueSize(),
+                                GenerationWorkerPool.getInstance().getBaseGenWorkerCount(),
+                                GenerationWorkerPool.getInstance().getFeaturesWorkerCount(),
+                                elapsedSec));
                     }
                 }
 

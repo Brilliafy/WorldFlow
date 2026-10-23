@@ -66,7 +66,9 @@ public abstract class ForgeWorldBiomeCacheMixin {
         com.pg85.otg.generator.biome.BiomeGenerator gen = this.getBiomeGenerator();
         if (gen != null) {
             try {
-                int[] biomeIds = gen.getBiomes(null, baseX, baseZ, 32, 32, com.pg85.otg.generator.biome.OutputType.FULL);
+                int[] biomeIds = com.cleanroommc.worldflow.pipeline.otg.OTGParallelContext
+                        .getBiomesSynchronized(gen, null, baseX, baseZ, 32, 32,
+                                com.pg85.otg.generator.biome.OutputType.FULL);
                 if (biomeIds != null && biomeIds.length >= 1024) {
                     for (int x = 0; x < 32; x++) {
                         for (int z = 0; z < 32; z++) {

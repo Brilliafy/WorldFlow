@@ -90,8 +90,15 @@ public class CascadeBlockBuffer {
         int chunkX = pos.getX() >> 4;
         int chunkZ = pos.getZ() >> 4;
 
-        if (world.getChunkProvider() instanceof net.minecraft.world.gen.ChunkProviderServer) {
+        // Never write into a live chunk while a generation context is active: that path
+        // (Chunk.setBlockState -> breakBlock -> World.setBlockState) re-enters the world
+        // view and recurses until StackOverflowError. Staged blocks are applied by the
+        // main-thread flush instead.
+        boolean generating = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.isGenerating();
+        if (!generating && world.getChunkProvider() instanceof net.minecraft.world.gen.ChunkProviderServer) {
             Chunk loaded = ((net.minecraft.world.gen.ChunkProviderServer) world.getChunkProvider()).getLoadedChunk(chunkX, chunkZ);
+            if (!(loaded instanceof com.cleanroommc.worldflow.pipeline.IWorldFlowChunk)
+                    || !((com.cleanroommc.worldflow.pipeline.IWorldFlowChunk) loaded).worldflow$isPublished()) {
             if (loaded != null) {
                 synchronized (loaded) {
                     IBlockState old = loaded.setBlockState(pos, state);
@@ -107,6 +114,7 @@ public class CascadeBlockBuffer {
                         return;
                     }
                 }
+            }
             }
         }
 

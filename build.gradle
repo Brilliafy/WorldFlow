@@ -113,6 +113,7 @@ dependencies {
     // Optional compile-time API for the DynamicTrees thread-confinement mixins.
     // Not embedded: the mod supplies these classes at runtime.
     compileOnly files('../TickFlow/libs/DynamicTrees-1.12.2-0.9.29.jar')
+    compileOnly files('libs/Charm-1.12.2-1.4.1.jar')
     if (propertyBool('use_modern_java_syntax')) {
         annotationProcessor 'com.github.bsideup.jabel:jabel-javac-plugin:1.0.0'
         // Workaround for https://github.com/bsideup/jabel/issues/174

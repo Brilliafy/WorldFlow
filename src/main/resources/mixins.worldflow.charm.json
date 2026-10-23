@@ -1,0 +1,14 @@
+{
+  "package": "com.cleanroommc.worldflow.mixin.charm",
+  "required": false,
+  "refmap": "mixins.worldflow.refmap.json",
+  "target": "@env(DEFAULT)",
+  "minVersion": "0.8.5",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "CharmVillageDecorationsMixin"
+  ],
+  "server": [],
+  "client": [],
+  "plugin": "com.cleanroommc.worldflow.mixin.WorldFlowMixinPlugin"
+}

@@ -1,5 +1,7 @@
 package com.cleanroommc.worldflow.mixin.otg;
 
+import com.cleanroommc.worldflow.pipeline.ProtoChunk;
+import net.minecraft.util.math.ChunkPos;
 import com.cleanroommc.worldflow.cascade.staging.CascadeBlockBuffer;
 import com.cleanroommc.worldflow.cascade.staging.GenerationContext;
 import com.cleanroommc.worldflow.config.ModConfig;
@@ -135,18 +137,41 @@ public abstract class OTGChunkGeneratorMixin {
 
         if (rawWorld instanceof WorldServer) {
             WorldServer worldServer = (WorldServer) rawWorld;
+            BlockPos pos = new BlockPos(x, y, z);
+
+            NBTTagCompound nmsTag = null;
+            if (metaDataTag != null) {
+                nmsTag = NBTHelper.getNMSFromNBTTagCompound(metaDataTag);
+                nmsTag.setInteger("x", x);
+                nmsTag.setInteger("y", y);
+                nmsTag.setInteger("z", z);
+                if (this.dataFixer != null) {
+                    nmsTag = this.dataFixer.process(net.minecraft.util.datafix.FixTypes.BLOCK_ENTITY, nmsTag);
+                }
+            }
+
+            // All terrain writes must go through the ProtoChunk that owns the target
+            // chunk. That path serializes cross-worker writes, and stages writes to
+            // already-published chunks for the main-thread flush. Calling
+            // Chunk.setBlockState directly races the chunk's block-state palette and
+            // tile-entity map (IntIdentityHashBiMap AIOOBE / HashMap CME).
+            long key = ChunkPos.asLong(chunkX, chunkZ);
+            com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.GenerationWorkerContext ctx =
+                    com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getContext();
+            ProtoChunk target = ctx != null ? ctx.lookup(key) : null;
+            if (target == null) {
+                target = com.cleanroommc.worldflow.pipeline.GenerationScheduler.getInstance().getProtoChunkAny(key);
+            }
+            if (target != null) {
+                target.setBlockState(pos, state, nmsTag);
+                ci.cancel();
+                return;
+            }
+
             Chunk chunk = com.cleanroommc.worldflow.pipeline.isolation.ThreadLocalWorldView.getChunk(worldServer, chunkX, chunkZ);
             if (chunk != null) {
-                BlockPos pos = new BlockPos(x, y, z);
                 chunk.setBlockState(pos, state);
-                if (metaDataTag != null) {
-                    NBTTagCompound nmsTag = NBTHelper.getNMSFromNBTTagCompound(metaDataTag);
-                    nmsTag.setInteger("x", x);
-                    nmsTag.setInteger("y", y);
-                    nmsTag.setInteger("z", z);
-                    if (this.dataFixer != null) {
-                        nmsTag = this.dataFixer.process(net.minecraft.util.datafix.FixTypes.BLOCK_ENTITY, nmsTag);
-                    }
+                if (nmsTag != null) {
                     net.minecraft.tileentity.TileEntity te = chunk.getTileEntity(pos, Chunk.EnumCreateEntityType.CHECK);
                     if (te == null && state.getBlock().hasTileEntity(state)) {
                         te = state.getBlock().createTileEntity(worldServer, state);
@@ -166,8 +191,7 @@ public abstract class OTGChunkGeneratorMixin {
 
             if (ModConfig.GENERAL.enableCascadeFix && ModConfig.GENERAL.stageOTGBlocks) {
                 if (worldServer.getChunkProvider().getLoadedChunk(chunkX, chunkZ) == null) {
-                    NBTTagCompound teNbt = metaDataTag != null ? NBTHelper.getNMSFromNBTTagCompound(metaDataTag) : null;
-                    CascadeBlockBuffer.INSTANCE.stageBlock(worldServer, new BlockPos(x, y, z), state, teNbt, "OTG/Dregora");
+                    CascadeBlockBuffer.INSTANCE.stageBlock(worldServer, pos, state, nmsTag, "OTG/Dregora");
                     ci.cancel();
                 }
             }

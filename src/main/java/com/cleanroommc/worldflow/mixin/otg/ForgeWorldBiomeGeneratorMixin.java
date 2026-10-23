@@ -35,16 +35,12 @@ public abstract class ForgeWorldBiomeGeneratorMixin {
             ThreadLocal.withInitial(IdentityHashMap::new);
 
     @Inject(method = "getBiomeGenerator", at = @At("HEAD"), cancellable = true, remap = false)
-    private void worldflow$threadLocalBiomeGenerator(CallbackInfoReturnable<BiomeGenerator> cir) {
-        BiomeGenerator local = this.worldflow$threadBiome.get();
-        if (local == null) {
-            local = worldflow$clone(this.biomeGenerator);
-            if (local != null) {
-                this.worldflow$threadBiome.set(local);
-            }
-        }
-        if (local != null) {
-            cir.setReturnValue(local);
+    private void worldflow$sharedBiomeGenerator(CallbackInfoReturnable<BiomeGenerator> cir) {
+        // Layer topology and the image biome map are read-only after construction.
+        // IntCache and ArraysCache are already thread-confined, so a single shared
+        // generator avoids rebuilding the multi-hundred-MB image map per worker.
+        if (this.biomeGenerator != null) {
+            cir.setReturnValue(this.biomeGenerator);
         }
     }
 

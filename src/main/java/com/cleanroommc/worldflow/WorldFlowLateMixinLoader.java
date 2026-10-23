@@ -27,6 +27,9 @@ public class WorldFlowLateMixinLoader implements ILateMixinLoader {
         if (Loader.isModLoaded("reccomplex")) {
             configs.add("mixins.worldflow.reccomplex.json");
         }
+        if (Loader.isModLoaded("charm")) {
+            configs.add("mixins.worldflow.charm.json");
+        }
         return configs;
     }
 }
