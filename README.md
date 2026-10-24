@@ -79,11 +79,13 @@ In Minecraft 1.12.2, generating new terrain is the single most expensive operati
 - **Player Stillness Detection**: Waits for players to be stationary before doing background work so active exploration is never penalized.
 - **Safety Margin**: Only works within a ring between an inner dead-zone (e.g. 12 chunks) and an outer radius (e.g. 32 chunks), avoiding competition with active player view distances.
 
-### 🌲 OpenTerrainGenerator (OTG v9.7) & Dregora Optimizations
-- **`BiomePrefetcher`**: Asynchronously warms OTG biome arrays a batch ahead of the active generation wavefront on background threads, eliminating feature-stage stalls.
-- **Striped Coordinate Locks**: Replaces coarse 100x100 region locks with 64-way striped locks on `CustomStructurePlotter`, enabling parallel structure plotting.
-- **Cache Optimization**: Re-tunes OTG's oversized global biome cache from 4,096 down to 512 entries, slashing steady-state memory consumption by 250 MB–300 MB without missing hits.
-- **Thread-Safe Tree Generation**: Protects `ForgeWorld.world` and `placeTree` from race conditions and stale thread reads.
+### 🌲 Deep Integration with [OTG-Flow](https://github.com/Brilliafy/OTG-Flow) (OpenTerrainGenerator)
+While WorldFlow is compatible with stock OTG v9.7, pairing it with [**OTG-Flow**](https://github.com/Brilliafy/OTG-Flow) unlocks dramatically superior multi-threaded performance. **Why parallelization works so much better on OTG-Flow:**
+- **Thread-Confined Biome Layer State**: Stock OTG stores random seed state (`chunkSeed`, `worldSeed`) in mutable instance variables in `Layer.java`. Under multi-threaded generation, concurrent workers overwrite each other's seeds, causing corrupted biomes and `ArrayIndexOutOfBoundsException` crashes. OTG-Flow isolates all RNG state into `ThreadLocal<Scratch>` memory, ensuring 100% thread-safe concurrent biome generation.
+- **Lock-Free Thread-Isolated Biome Cache**: Stock OTG routes all biome lookups into a single non-thread-safe `FifoMap`. OTG-Flow provides isolated `ThreadLocal<FifoMap>` caches (1,024 chunks/thread), completely eliminating lock contention and thread stalls.
+- **64-Stripe BO4 Parallel Structure Plotting**: Stock OTG's `CustomStructurePlotter` relies on unsynchronized maps and hardcoded `Thread.sleep(20)` delays that cause thread starvation and deadlocks. OTG-Flow replaces this with a 64-stripe `REGION_LOCKS` hash array and `ConcurrentHashMap`, allowing concurrent threads to plot BO4 structures simultaneously.
+- **Zero-Garbage Coordinate Pooling**: Stock OTG churns over **27.3 GB of heap garbage in 25 seconds** by instantiating new `ChunkCoordinate` objects for every block check. OTG-Flow uses a 256-slot bitwise cache and `MutableBlockPos`, slashing young-generation GC pauses.
+- **`BiomePrefetcher`**: WorldFlow asynchronously warms OTG biome arrays a batch ahead of the active generation wavefront on background threads, keeping worker queues saturated.
 
 ### 🧩 Broad Mod Concurrency Isolation
 - Automated classification and safety levels (`PARALLEL_SAFE`, `SERIALIZE`, `UNSAFE`) for third-party mod generators.
@@ -138,7 +140,7 @@ WorldFlow has undergone extensive soak and stress testing on massive, real-world
 - **Minecraft**: `1.12.2`
 - **Mod Loader**: [Cleanroom](https://github.com/CleanroomMC/Cleanroom) `0.6.x+` (recommended) or [Minecraft Forge](https://files.minecraftforge.net/) `14.23.5.2864+`
 - **Required Dependency**: [MixinBooter](https://www.curseforge.com/minecraft/mc-mods/mixinbooter) `10.2` or newer (11.8+ recommended on Forge)
-- **Optional**: OpenTerrainGenerator (OTG v9.7) for Dregora worlds
+- **Recommended World Engine**: [**OTG-Flow**](https://github.com/Brilliafy/OTG-Flow) (engineered for multi-threaded generation with thread-confined biome layers & zero-garbage coordinate pooling; stock OTG v9.7 is also supported)
 - **Java**: Java 8 through modern Java 21+ runtimes supported.
 
 ### Setup Instructions
@@ -263,7 +265,8 @@ File: `config/worldflow.cfg`
 | Mod / System | Compatibility | Description |
 |---|:---:|---|
 | **[ChunkFlow](https://github.com/Brilliafy/ChunkFlow)** | 🌟 **Paired Mod** | **Recommended companion**: ChunkFlow optimizes disk reads and network streaming, while WorldFlow optimizes terrain generation. |
-| **OpenTerrainGenerator (OTG v9.7)** | ✅ Full Integration | Biome prefetcher, striped plotter locks, and structure memory reductions. |
+| **[OTG-Flow](https://github.com/Brilliafy/OTG-Flow)** | 🌟 **Recommended Engine** | The concurrent edition of OpenTerrainGenerator v9.7. Eliminates biome layer seed races, unlocks 64-stripe parallel structure plotting, and slashes 27+ GB of coordinate allocation churn. |
+| **Stock OTG (v9.7)** | ✅ Compatible | Biome prefetcher, striped plotter locks, and structure memory reductions. |
 | **Dregora / Dregora RL** | ✅ Full Integration | Eliminates cascading world generation freezes from custom structures. |
 | **DynamicTrees** | ✅ Native Hook | Thread-safe Poisson disc provider registry lock preventing race conditions. |
 | **Biomes O' Plenty** | ✅ Tested Safe | Verified safe execution path with variant guards. |

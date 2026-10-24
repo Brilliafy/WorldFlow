@@ -43,7 +43,7 @@ Generating new terrain in Minecraft 1.12.2 has notoriously caused catastrophic s
 * ⚡ **Vectorized Branchless Noise Engine**: Re-engineers `NoiseGeneratorImproved` using branchless gradient math, delivering massive CPU speedups while remaining **100% bit-identical** to vanilla terrain generation.
 * 🛡️ **Cross-Chunk Cascade Block Staging**: Blocks placed into unloaded neighbor chunks during population are safely intercepted and staged in memory (`CascadeBlockBuffer`) and on disk (`cascade_staging.dat`). Staged blocks are flushed cleanly once the neighbor chunk loads—eliminating recursive cascading freezes forever!
 * 🛌 **Gentle Budgeted Background Pre-Generator**: Conservatively generates new terrain rings around active players during spare server tick time. Automatically backs off whenever server tick times exceed 45 ms, and only works when players are settled to prevent competition with active exploration.
-* 🌲 **OTG & Dregora Deep Integration**: Includes asynchronous biome prefetching (`BiomePrefetcher`), 64-way striped structure plotter locks, tuned biome cache limits (saving ~250–300 MB of heap), and thread-safe tree generation guards.
+* 🌲 **Deep Integration with [OTG-Flow](https://github.com/Brilliafy/OTG-Flow)**: Pair with the multi-threaded edition of OpenTerrainGenerator! While stock OTG suffers from mutable biome layer race conditions, thread stalls in `CustomStructurePlotter`, and 27+ GB of coordinate allocation churn, **OTG-Flow** provides thread-confined biome layers, 64-stripe parallel BO4 structure plotting, lock-free per-thread biome caches, and zero-allocation coordinate pooling. Also includes WorldFlow's asynchronous `BiomePrefetcher`.
 * 🧩 **Extensive Mod Concurrency Protection**: Includes native safety hooks and locks for **DynamicTrees**, **Recurrent Complex**, **Roguelike Dungeons**, **Biomes O' Plenty**, **NuclearCraft**, and **Charm**.
 
 ---
@@ -68,7 +68,7 @@ Tested under rigorous radius-32 benchmark suites and long-duration soaks on real
 * **Minecraft**: `1.12.2`
 * **Mod Loader**: [Cleanroom](https://github.com/CleanroomMC/Cleanroom) `0.6.x+` (recommended) or [Minecraft Forge](https://files.minecraftforge.net/) `14.23.5.2864+`
 * **Required Dependency**: [**MixinBooter**](https://www.curseforge.com/minecraft/mc-mods/mixinbooter) `10.2` or newer (11.8+ recommended on Forge)
-* **Optional**: OpenTerrainGenerator (OTG v9.7) for Dregora worlds
+* **Recommended World Engine**: [**OTG-Flow**](https://github.com/Brilliafy/OTG-Flow) (for Dregora, Biome Bundle, and custom presets; stock OTG v9.7 is also supported)
 * **Java**: Java 8 through modern Java 21+ runtimes supported.
 
 ### Installation:
@@ -132,4 +132,4 @@ Using both together provides complete, end-to-end chunk optimization!
 
 * **Source Code & Issues**: [GitHub](https://github.com/Brilliafy/WorldFlow)
 * **CleanroomMC Community**: [Cleanroom Discord](https://discord.gg/cleanroommc)
-* **Companion Mod**: [ChunkFlow](https://github.com/Brilliafy/ChunkFlow)
+* **Companion Mods**: [ChunkFlow](https://github.com/Brilliafy/ChunkFlow) (Disk I/O) • [OTG-Flow](https://github.com/Brilliafy/OTG-Flow) (Concurrent OTG World Engine)
