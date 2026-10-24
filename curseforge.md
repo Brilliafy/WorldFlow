@@ -1,21 +1,13 @@
-<!-- Rich HTML Companion Banner -->
 <div align="center">
-  <table style="width: 100%; max-width: 880px; border: 2px solid #3b82f6; border-radius: 12px; background: #0f172a; color: #f8fafc; padding: 14px 20px; margin: 16px auto; box-shadow: 0 4px 14px rgba(59, 130, 246, 0.25);">
+  <table style="display: inline-table; border: 1px solid #3b82f6; border-radius: 8px; background-color: rgba(59, 130, 246, 0.08); padding: 8px 16px; margin: 12px auto;">
     <tr>
-      <td width="70" align="center" valign="middle">
-        <a href="https://github.com/CleanroomMC/ChunkFlow">
-          <img src="https://raw.githubusercontent.com/CleanroomMC/ChunkFlow/main/logo.png" width="60" height="60" alt="ChunkFlow Logo" style="border-radius: 8px; vertical-align: middle;" />
+      <td style="vertical-align: middle; padding-right: 12px;">
+        <a href="https://github.com/Brilliafy/ChunkFlow">
+          <img src="https://raw.githubusercontent.com/Brilliafy/ChunkFlow/main/logo.png" width="36" height="36" alt="ChunkFlow Logo" style="border-radius: 6px; vertical-align: middle;" />
         </a>
       </td>
-      <td style="padding-left: 18px; text-align: left; vertical-align: middle;">
-        <div style="font-size: 1.15em; font-weight: 800; color: #60a5fa; letter-spacing: 0.5px; margin-bottom: 4px;">
-          ⚡ PAIR WITH CHUNKFLOW FOR THE COMPLETE CHUNK PIPELINE!
-        </div>
-        <div style="font-size: 0.95em; line-height: 1.5; color: #e2e8f0;">
-          <b>WorldFlow</b> optimizes <b>generating brand new terrain</b>, eliminates cascading worldgen freezes, and accelerates noise calculation.<br />
-          For <b>reading existing chunks from disk up to 5.9x faster</b> with lock-free positional region I/O (<tt>pread64</tt>) and directional Elytra streaming, pair this with our companion mod:
-          <a href="https://github.com/CleanroomMC/ChunkFlow" style="color: #93c5fd; font-weight: bold; text-decoration: underline;">👉 ChunkFlow</a>!
-        </div>
+      <td style="vertical-align: middle; text-align: left; font-size: 14px;">
+        ⚡ <b>Looking for faster disk loading & Elytra flight?</b> Pair with <a href="https://github.com/Brilliafy/ChunkFlow"><b>ChunkFlow</b></a> for lock-free region I/O (<tt>pread64</tt>) & directional streaming!
       </td>
     </tr>
   </table>
@@ -82,7 +74,7 @@ Tested under rigorous radius-32 benchmark suites and long-duration soaks on real
 ### Installation:
 1. Ensure **MixinBooter** is installed in your `.minecraft/mods` folder.
 2. Download `worldflow-1.0.3.jar` and place it in your `mods` folder.
-3. *(Recommended)* Pair with [**ChunkFlow**](https://github.com/CleanroomMC/ChunkFlow) for disk loading and Elytra streaming speedups.
+3. *(Recommended)* Pair with [**ChunkFlow**](https://github.com/Brilliafy/ChunkFlow) for disk loading and Elytra streaming speedups.
 4. Launch your server or singleplayer game!
 
 > **Client vs Server**: WorldFlow is primarily a **server-side mod**. It can be installed on dedicated servers without requiring connecting players to have the mod installed. It is also fully functional on the client for singleplayer worlds.
@@ -138,6 +130,6 @@ Using both together provides complete, end-to-end chunk optimization!
 
 ## 🔗 Links & Community
 
-* **Source Code & Issues**: [GitHub](https://github.com/CleanroomMC/WorldFlow)
+* **Source Code & Issues**: [GitHub](https://github.com/Brilliafy/WorldFlow)
 * **CleanroomMC Community**: [Cleanroom Discord](https://discord.gg/cleanroommc)
-* **Companion Mod**: [ChunkFlow](https://github.com/CleanroomMC/ChunkFlow)
+* **Companion Mod**: [ChunkFlow](https://github.com/Brilliafy/ChunkFlow)

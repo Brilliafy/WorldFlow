@@ -1,59 +1,45 @@
 <div align="center">
 
-<!-- Rich HTML Companion Banner -->
-<table style="width: 100%; max-width: 880px; border: 2px solid #3b82f6; border-radius: 12px; background: #0f172a; color: #f8fafc; padding: 14px 20px; margin: 16px auto; box-shadow: 0 4px 14px rgba(59, 130, 246, 0.25);">
+<table style="display: inline-table; border: 1px solid #3b82f6; border-radius: 8px; background-color: rgba(59, 130, 246, 0.08); padding: 8px 16px; margin: 12px auto;">
   <tr>
-    <td width="70" align="center" valign="middle">
-      <a href="https://github.com/CleanroomMC/ChunkFlow">
-        <img src="https://raw.githubusercontent.com/CleanroomMC/ChunkFlow/main/logo.png" width="60" height="60" alt="ChunkFlow Logo" style="border-radius: 8px; vertical-align: middle;" />
+    <td style="vertical-align: middle; padding-right: 12px;">
+      <a href="https://github.com/Brilliafy/ChunkFlow">
+        <img src="https://raw.githubusercontent.com/Brilliafy/ChunkFlow/main/logo.png" width="36" height="36" alt="ChunkFlow Logo" style="border-radius: 6px; vertical-align: middle;" />
       </a>
     </td>
-    <td style="padding-left: 18px; text-align: left; vertical-align: middle;">
-      <div style="font-size: 1.15em; font-weight: 800; color: #60a5fa; letter-spacing: 0.5px; margin-bottom: 4px;">
-        ⚡ PAIR WITH CHUNKFLOW FOR COMPLETE PIPELINE OPTIMIZATION!
-      </div>
-      <div style="font-size: 0.95em; line-height: 1.5; color: #e2e8f0;">
-        <b>WorldFlow</b> optimizes <b>generating brand new terrain</b>, eliminates cascading worldgen freezes, and accelerates noise calculation.<br />
-        For <b>reading existing chunks from disk up to 5.9x faster</b> with lock-free positional region I/O (<code>pread64</code>) and directional Elytra streaming, pair this with our companion mod:
-        <a href="https://github.com/CleanroomMC/ChunkFlow" style="color: #93c5fd; font-weight: bold; text-decoration: underline;">👉 ChunkFlow</a>!
-      </div>
+    <td style="vertical-align: middle; text-align: left; font-size: 14px;">
+      ⚡ <b>Looking for faster disk loading & Elytra flight?</b> Pair with <a href="https://github.com/Brilliafy/ChunkFlow"><b>ChunkFlow</b></a> for lock-free region I/O (<tt>pread64</tt>) & directional streaming!
     </td>
   </tr>
 </table>
 
-<img src="logo.png" alt="WorldFlow Logo" width="160" height="160" />
+<br />
+
+<img src="logo.png" alt="WorldFlow Logo" width="130" height="130" />
 
 # WorldFlow
 
-**High-Performance Parallel World Generation, Vectorized Terrain Noise & Cascade Elimination for Minecraft 1.12.2**
+**Parallel World Generation, Vectorized Terrain Noise & Cascade Elimination for Minecraft 1.12.2**
 
-[![Minecraft](https://img.shields.io/badge/Minecraft-1.12.2-blue.svg?style=for-the-badge&logo=minecraft)](https://minecraft.net/)
-[![Platform](https://img.shields.io/badge/Platform-Cleanroom%20%7C%20Forge-orange.svg?style=for-the-badge)](https://github.com/CleanroomMC)
-[![Version](https://img.shields.io/badge/Release-v1.0.3-brightgreen.svg?style=for-the-badge)](https://github.com/CleanroomMC/WorldFlow/releases)
-[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg?style=for-the-badge)](LICENSE)
-[![MixinBooter](https://img.shields.io/badge/Requires-MixinBooter%2010.2+-purple.svg?style=for-the-badge)](https://www.curseforge.com/minecraft/mc-mods/mixinbooter)
-[![Speedup](https://img.shields.io/badge/Generation%20Speed-52.7%2B%20chunks%2Fs-gold.svg?style=for-the-badge)](#-validation--benchmarks)
+[![Minecraft](https://img.shields.io/badge/Minecraft-1.12.2-blue.svg?style=flat-square&logo=minecraft)](https://minecraft.net/)
+[![Platform](https://img.shields.io/badge/Platform-Cleanroom%20%7C%20Forge-orange.svg?style=flat-square)](https://github.com/CleanroomMC)
+[![Version](https://img.shields.io/badge/Release-v1.0.3-brightgreen.svg?style=flat-square)](https://github.com/Brilliafy/WorldFlow/releases)
+[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg?style=flat-square)](LICENSE)
+[![MixinBooter](https://img.shields.io/badge/Requires-MixinBooter%2010.2+-purple.svg?style=flat-square)](https://www.curseforge.com/minecraft/mc-mods/mixinbooter)
+[![Speedup](https://img.shields.io/badge/Speed-52.7%2B%20chunks%2Fs-gold.svg?style=flat-square)](#-validation--benchmarks)
 
 <p align="center">
   <a href="#-why-worldflow">Why WorldFlow?</a> •
   <a href="#-key-features">Key Features</a> •
   <a href="#-architecture-comparison">Architecture</a> •
-  <a href="#-validation--benchmarks">Validation & Benchmarks</a> •
+  <a href="#-validation--benchmarks">Benchmarks</a> •
   <a href="#-installation">Installation</a> •
   <a href="#-commands">Commands</a> •
   <a href="#-configuration">Configuration</a> •
-  <a href="#-compatibility--integrations">Compatibility</a> •
-  <a href="#-building-from-source">Building</a>
+  <a href="#-compatibility--integrations">Compatibility</a>
 </p>
 
 </div>
-
----
-
-> [!TIP]
-> **Recommended Companion Mod**: Pair WorldFlow with [**ChunkFlow**](https://github.com/CleanroomMC/ChunkFlow)!
-> - **WorldFlow**: Accelerates **new chunk generation**, vectorizes terrain noise, and eliminates cascading cross-chunk worldgen freezes.
-> - **ChunkFlow**: Accelerates **disk loading of generated chunks** (2.9x - 5.9x faster) with lock-free positional region I/O and directional Elytra streaming.
 
 ---
 
@@ -158,7 +144,7 @@ WorldFlow has undergone extensive soak and stress testing on massive, real-world
 ### Setup Instructions
 1. Ensure **MixinBooter** (10.2+) is present in your `mods/` directory.
 2. Place `worldflow-1.0.3.jar` into your `mods/` folder.
-3. *(Recommended)* Pair with [**ChunkFlow**](https://github.com/CleanroomMC/ChunkFlow) for disk I/O and player chunk streaming speedups.
+3. *(Recommended)* Pair with [**ChunkFlow**](https://github.com/Brilliafy/ChunkFlow) for disk I/O and player chunk streaming speedups.
 4. Start your server or singleplayer client.
 
 > [!NOTE]
@@ -276,7 +262,7 @@ File: `config/worldflow.cfg`
 
 | Mod / System | Compatibility | Description |
 |---|:---:|---|
-| **[ChunkFlow](https://github.com/CleanroomMC/ChunkFlow)** | 🌟 **Paired Mod** | **Recommended companion**: ChunkFlow optimizes disk reads and network streaming, while WorldFlow optimizes terrain generation. |
+| **[ChunkFlow](https://github.com/Brilliafy/ChunkFlow)** | 🌟 **Paired Mod** | **Recommended companion**: ChunkFlow optimizes disk reads and network streaming, while WorldFlow optimizes terrain generation. |
 | **OpenTerrainGenerator (OTG v9.7)** | ✅ Full Integration | Biome prefetcher, striped plotter locks, and structure memory reductions. |
 | **Dregora / Dregora RL** | ✅ Full Integration | Eliminates cascading world generation freezes from custom structures. |
 | **DynamicTrees** | ✅ Native Hook | Thread-safe Poisson disc provider registry lock preventing race conditions. |
@@ -297,7 +283,7 @@ File: `config/worldflow.cfg`
 ### Build Instructions
 ```bash
 # Clone the repository
-git clone https://github.com/CleanroomMC/WorldFlow.git
+git clone https://github.com/Brilliafy/WorldFlow.git
 cd WorldFlow
 
 # Build the mod jar using Gradle
@@ -314,7 +300,7 @@ cd WorldFlow
 Contributions, bug reports, and optimizations are welcome!
 - Please read our [**Contributing Guidelines**](CONTRIBUTING.md) before opening a pull request.
 - Verify your changes with `./gradlew build` and automated worldgen benchmarks.
-- Report issues and suggest features on the [**GitHub Issue Tracker**](https://github.com/CleanroomMC/WorldFlow/issues).
+- Report issues and suggest features on the [**GitHub Issue Tracker**](https://github.com/Brilliafy/WorldFlow/issues).
 
 ---
 
