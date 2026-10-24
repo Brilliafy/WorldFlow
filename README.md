@@ -8,7 +8,7 @@
       </a>
     </td>
     <td style="vertical-align: middle; text-align: left; font-size: 14px;">
-      ⚡ <b>Looking for faster disk loading & Elytra flight?</b> Pair with <a href="https://github.com/Brilliafy/ChunkFlow"><b>ChunkFlow</b></a> for lock-free region I/O (<tt>pread64</tt>) & directional streaming!
+      ⚡ <b>Pair with <a href="https://github.com/Brilliafy/ChunkFlow">ChunkFlow</a></b> for 3x faster chunk loading from disk and smooth exploration without void holes!
     </td>
   </tr>
 </table>
