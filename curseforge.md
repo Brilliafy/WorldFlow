@@ -23,7 +23,7 @@
 
 **WorldFlow** is an advanced world generation optimization mod for **Minecraft 1.12.2** (running on **Cleanroom** or **Minecraft Forge**). It transforms how the game creates new terrain by introducing multi-threaded parallel generation pipelines, vectorized branchless terrain noise, cross-chunk cascade block staging, and intelligent background pre-generation.
 
-Generating new terrain in Minecraft 1.12.2 has notoriously caused catastrophic server lag spikes, TPS drops, and tick freezes—especially in large modpacks featuring colossal structures and complex biomes like **OpenTerrainGenerator (OTG)**, **Dregora**, **Recurrent Complex**, and **Biomes O' Plenty**.
+Generating new terrain in Minecraft 1.12.2 has notoriously caused catastrophic server lag spikes, TPS drops, and tick freezes especially in large modpacks featuring colossal structures and complex biomes like **OpenTerrainGenerator (OTG)**, **Dregora**, **Recurrent Complex**, and **Biomes O' Plenty**.
 
 **WorldFlow solves these problems at their root**, allowing servers and singleplayer clients to generate new terrain at sustained rates of **140 chunks per second** on stock OTG terrain (radius-32 = 4,225 chunks in 30.29 s, Forge 1.12.2, 4C/8T) without stalling game ticks. Full setup and the stock-OTG / no-mods baselines are in [Performance & Validation](#-performance--validation).
 
@@ -41,7 +41,7 @@ Generating new terrain in Minecraft 1.12.2 has notoriously caused catastrophic s
 
 * 🚀 **True Multi-Threaded Parallel Pipeline**: Offloads base terrain and feature generation to a multi-worker background pool (`cores - 1`), keeping the main game tick completely smooth and lag-free.
 * ⚡ **Vectorized Branchless Noise Engine**: Re-engineers `NoiseGeneratorImproved` using branchless gradient math, delivering massive CPU speedups while remaining **100% bit-identical** to vanilla terrain generation.
-* 🛡️ **Cross-Chunk Cascade Block Staging**: Blocks placed into unloaded neighbor chunks during population are safely intercepted and staged in memory (`CascadeBlockBuffer`) and on disk (`cascade_staging.dat`). Staged blocks are flushed cleanly once the neighbor chunk loads—eliminating recursive cascading freezes forever!
+* 🛡️ **Cross-Chunk Cascade Block Staging**: Blocks placed into unloaded neighbor chunks during population are safely intercepted and staged in memory (`CascadeBlockBuffer`) and on disk (`cascade_staging.dat`). Staged blocks are flushed cleanly once the neighbor chunk loads eliminating recursive cascading freezes forever!
 * 🛌 **Gentle Budgeted Background Pre-Generator**: Conservatively generates new terrain rings around active players during spare server tick time. Automatically backs off whenever server tick times exceed 45 ms, and only works when players are settled to prevent competition with active exploration.
 * 🌲 **Deep Integration with [OTG-Flow](https://github.com/Brilliafy/OTG-Flow)**: Pair with the multi-threaded edition of OpenTerrainGenerator! While stock OTG suffers from mutable biome layer race conditions, thread stalls in `CustomStructurePlotter`, and 27+ GB of coordinate allocation churn, **OTG-Flow** provides thread-confined biome layers, 64-stripe parallel BO4 structure plotting, lock-free per-thread biome caches, and zero-allocation coordinate pooling. Also includes WorldFlow's asynchronous `BiomePrefetcher`.
 * 🧩 **Extensive Mod Concurrency Protection**: Includes native safety hooks and locks for **DynamicTrees**, **Recurrent Complex**, **Roguelike Dungeons**, **Biomes O' Plenty**, **NuclearCraft**, and **Charm**.
@@ -55,7 +55,7 @@ Tested under rigorous radius-32 benchmark suites and long-duration soaks on real
 | Metric | Baseline | WorldFlow 1.0.3 | Improvement |
 |---|---|---|---|
 | **Radius-32, stock OTG 9.7, no optimization mods** | 4,225 chunks in **35.93 s** = 119.3 chunks/s | 4,225 chunks in **30.29 s** = **140.0 chunks/s** | **1.17× (5.64 s saved)** |
-| **Vanilla terrain, no mods at all (same driver)** | 8,618 chunks / 80.28 s = **107.4 chunks/s** | — | WorldFlow is **1.30× vanilla** on OTG terrain |
+| **Vanilla terrain, no mods at all (same driver)** | 8,618 chunks / 80.28 s = **107.4 chunks/s** |   | WorldFlow is **1.30× vanilla** on OTG terrain |
 | **Cascading Generation Spikes** | Unchecked recursive loads | Intercepted & Staged | **100% Cascade Elimination** |
 | **Terrain Determinism** | Baseline | Bit-identical across 81/81 samples | **Exact Vanilla Output** |
 | **OTG Biome Cache Memory** | Oversized (4096 entries) | Optimized (512 entries) | **Saves 250 MB–300 MB Heap** |
@@ -64,7 +64,7 @@ Tested under rigorous radius-32 benchmark suites and long-duration soaks on real
 **Benchmark setup (radius-32 numbers above).** Forge `14.23.5.2864`, Java 8, Intel i5-1145G7 (4C/8T), 15 GB RAM, single JVM, `-Xms2G -Xmx3G`, `view-distance=4`, no players online, fresh world (seed `-3418406561478196160`), OTG v9.7 **default preset** (not Dregora), chunk square centered on block `(32000, 32000)` = chunk `(2000, 2000)`, radius 32 = **4,225 chunks**.
 
 - **WorldFlow row:** `/worldflow bench 32 8 2000 2000` → 8 workers (2 base-gen + 6 features), `pipeline=4241 / inline=0`, `BaseGen=9.1 ms`, `Features=9.1 ms` per chunk.
-- **Stock-OTG row:** identical 4,225-chunk square, generated by an identical force-load driver (`provideChunk` in ring order) with **only** stock OTG installed — no WorldFlow, no ChunkFlow.
+- **Stock-OTG row:** identical 4,225-chunk square, generated by an identical force-load driver (`provideChunk` in ring order) with **only** stock OTG installed   no WorldFlow, no ChunkFlow.
 - **Vanilla row:** same driver with **no mods at all**, 80 s steady-state window.
 
 The 52.7 chunks/s figure quoted in earlier builds was the **DregoraRL preset** (far heavier terrain, custom BO3/BO4 objects) on the same laptop, not this OTG default preset.
@@ -94,13 +94,13 @@ The 52.7 chunks/s figure quoted in earlier builds was the **DregoraRL preset** (
 
 Execute `/worldflow` in-game for comprehensive administration and diagnostics:
 
-* `/worldflow noise [stats|toggle|clear]` — View noise counters and toggle branchless evaluations.
-* `/worldflow cascade [status|flush|clear|toggle|reload]` — View staged cross-chunk blocks or manually trigger a flush.
-* `/worldflow pregen [status|start|stop|toggle|radius <n>|rate <ticks>]` — Configure and monitor gentle background pre-generation.
-* `/worldflow pipeline [status|toggle|workers <n>|inflight <n>]` — Monitor or tune the parallel generation pipeline.
-* `/worldflow bench <r> <workers> <x> <z> [baseThreads]` — Benchmark world generation speed across a test radius.
-* `/worldflow otgstats` — Display live OTG structure caches, BO4 definitions, and staged block numbers.
-* `/worldflow unloadarea <cx> <cz> <r>` — Unload and clean up test generation areas from memory.
+* `/worldflow noise [stats|toggle|clear]`   View noise counters and toggle branchless evaluations.
+* `/worldflow cascade [status|flush|clear|toggle|reload]`   View staged cross-chunk blocks or manually trigger a flush.
+* `/worldflow pregen [status|start|stop|toggle|radius <n>|rate <ticks>]`   Configure and monitor gentle background pre-generation.
+* `/worldflow pipeline [status|toggle|workers <n>|inflight <n>]`   Monitor or tune the parallel generation pipeline.
+* `/worldflow bench <r> <workers> <x> <z> [baseThreads]`   Benchmark world generation speed across a test radius.
+* `/worldflow otgstats`   Display live OTG structure caches, BO4 definitions, and staged block numbers.
+* `/worldflow unloadarea <cx> <cz> <r>`   Unload and clean up test generation areas from memory.
 
 ---
 
