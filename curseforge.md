@@ -131,5 +131,5 @@ Using both together provides complete, end-to-end chunk optimization!
 ## 🔗 Links & Community
 
 * **Source Code & Issues**: [GitHub](https://github.com/Brilliafy/WorldFlow)
-* **CleanroomMC Community**: [Cleanroom Discord](https://discord.gg/cleanroommc)
+* **Cleanroom Discord**: [Cleanroom Community Discord](https://discord.gg/cleanroommc)
 * **Companion Mods**: [ChunkFlow](https://github.com/Brilliafy/ChunkFlow) (Disk I/O) • [OTG-Flow](https://github.com/Brilliafy/OTG-Flow) (Concurrent OTG World Engine)

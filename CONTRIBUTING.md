@@ -16,7 +16,7 @@ WorldFlow is built for **Minecraft 1.12.2** on **Cleanroom** and **Minecraft For
 ### Initializing the Workspace
 ```bash
 # Clone the repository
-git clone https://github.com/CleanroomMC/WorldFlow.git
+git clone https://github.com/Brilliafy/WorldFlow.git
 cd WorldFlow
 
 # Build the mod
@@ -63,7 +63,7 @@ cd WorldFlow
 
 ## 🐞 Reporting Issues
 
-When filing issues on our [GitHub Issue Tracker](https://github.com/CleanroomMC/WorldFlow/issues):
+When filing issues on our [GitHub Issue Tracker](https://github.com/Brilliafy/WorldFlow/issues):
 - Include your Minecraft version, mod loader (Forge or Cleanroom build), and MixinBooter version.
 - Provide the full crash log or debug log (`logs/debug.log`) via Pastebin or GitHub Gist.
 - Note whether the world is vanilla, Biomes O' Plenty, or OpenTerrainGenerator/Dregora.
