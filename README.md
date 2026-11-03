@@ -1,3 +1,12 @@
+> [!WARNING]
+> ### PROJECT UNMAINTAINED / ON INDEFINITE HIATUS
+> **This project is no longer actively maintained and is on indefinite hiatus.**
+> No further updates, feature additions, or bug fixes will be provided. The repository is archived and read-only. Anyone is welcome to fork this project and continue development under the terms of the open-source license.
+>
+> ⚠️ **Notice: Unconfirmed Nether Chunk Generation Issue**
+> There is an unconfirmed bug report regarding corrupted new chunk generation in the Nether. Users should proceed with caution and back up worlds before generating new Nether chunks with this engine.
+
+
 <div align="center">
 
 <table style="display: inline-table; border: 1px solid #3b82f6; border-radius: 8px; background-color: rgba(59, 130, 246, 0.08); padding: 8px 16px; margin: 12px auto;">
